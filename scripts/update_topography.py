@@ -1,37 +1,51 @@
 import json
 import os
-import requests
+import math
+
+import numpy as np
 import rasterio
-from rasterio.mask import mask
 from rasterio.merge import merge
-from rasterio.transform import from_bounds
+from rasterio.mask import mask
 from shapely.geometry import shape, mapping
 from shapely.ops import unary_union
-from pyproj import Transformer
-from io import BytesIO
-import numpy as np
 
 
 # ============================================================
 # FARS-HRI
-# Topography
+# Lightweight Topography
 # DEM + Slope + Aspect
+# Copernicus GLO-90
 # ============================================================
 
 BOUNDARY_FILE = "fars.geojson"
 
 OUTPUT_DIR = "data/topography"
 
-DEM_FILE = os.path.join(OUTPUT_DIR, "fars_dem.tif")
-SLOPE_FILE = os.path.join(OUTPUT_DIR, "fars_slope.tif")
-ASPECT_FILE = os.path.join(OUTPUT_DIR, "fars_aspect.tif")
-
-
-# Copernicus DEM GLO-30
-# AWS Open Data
-COPERNICUS_DEM_URL = (
-    "https://copernicus-dem-30m.s3.amazonaws.com/"
+DEM_FILE = os.path.join(
+    OUTPUT_DIR,
+    "fars_dem.tif"
 )
+
+SLOPE_FILE = os.path.join(
+    OUTPUT_DIR,
+    "fars_slope.tif"
+)
+
+ASPECT_FILE = os.path.join(
+    OUTPUT_DIR,
+    "fars_aspect.tif"
+)
+
+
+# ============================================================
+# Copernicus GLO-90
+# ============================================================
+
+BASE_URL = (
+    "https://copernicus-dem-90m.s3.amazonaws.com/"
+)
+
+RESOLUTION = "30"
 
 
 # ============================================================
@@ -75,30 +89,64 @@ def load_boundary():
             shape(data)
         )
 
-    boundary = unary_union(
+    return unary_union(
         geometries
     )
 
-    print("Fars boundary loaded.")
 
-    return boundary
+# ============================================================
+# نام Tile
+# ============================================================
+
+def tile_name(lat, lon):
+
+    if lat >= 0:
+        north = f"N{lat:02d}"
+    else:
+        north = f"S{abs(lat):02d}"
+
+    if lon >= 0:
+        east = f"E{lon:03d}"
+    else:
+        east = f"W{abs(lon):03d}"
+
+    return (
+        f"Copernicus_DSM_COG_{RESOLUTION}_"
+        f"{north}_00_"
+        f"{east}_00_DEM"
+    )
 
 
 # ============================================================
-# پیدا کردن Tile های Copernicus DEM
+# ساخت URL
 # ============================================================
 
-def get_tiles(boundary):
+def tile_url(name):
+
+    return (
+        BASE_URL
+        + name
+        + "/"
+        + name
+        + ".tif"
+    )
+
+
+# ============================================================
+# پیدا کردن Tile های موردنیاز
+# ============================================================
+
+def get_tile_urls(boundary):
 
     minx, miny, maxx, maxy = boundary.bounds
 
-    min_lon = int(np.floor(minx))
-    max_lon = int(np.floor(maxx))
+    min_lon = math.floor(minx)
+    max_lon = math.floor(maxx)
 
-    min_lat = int(np.floor(miny))
-    max_lat = int(np.floor(maxy))
+    min_lat = math.floor(miny)
+    max_lat = math.floor(maxy)
 
-    tiles = []
+    urls = []
 
     for lat in range(
         min_lat,
@@ -110,147 +158,71 @@ def get_tiles(boundary):
             max_lon + 1
         ):
 
-            if lat >= 0:
-
-                lat_name = f"N{lat:02d}"
-
-            else:
-
-                lat_name = f"S{abs(lat):02d}"
-
-            if lon >= 0:
-
-                lon_name = f"E{lon:03d}"
-
-            else:
-
-                lon_name = f"W{abs(lon):03d}"
-
-            tile_name = (
-                f"Copernicus_DSM_COG_10_"
-                f"{lat_name}_00_"
-                f"{lon_name}_00_DEM"
+            name = tile_name(
+                lat,
+                lon
             )
 
-            url = (
-                COPERNICUS_DEM_URL
-                + tile_name
-                + "/"
-                + tile_name
-                + ".tif"
+            urls.append(
+                tile_url(name)
             )
 
-            tiles.append(
-                {
-                    "name": tile_name,
-                    "url": url
-                }
-            )
-
-    return tiles
+    return urls
 
 
 # ============================================================
-# دانلود DEM
+# دریافت DEM به‌صورت Remote COG
 # ============================================================
 
-def download_tiles(
-    tiles,
-    boundary
-):
-
-    os.makedirs(
-        OUTPUT_DIR,
-        exist_ok=True
-    )
-
-    downloaded = []
-
-    for tile in tiles:
-
-        print()
-        print(
-            "Downloading:",
-            tile["name"]
-        )
-
-        local_file = os.path.join(
-            OUTPUT_DIR,
-            tile["name"] + ".tif"
-        )
-
-        try:
-
-            response = requests.get(
-                tile["url"],
-                timeout=120
-            )
-
-            if response.status_code != 200:
-
-                print(
-                    "Tile unavailable:",
-                    response.status_code
-                )
-
-                continue
-
-            with open(
-                local_file,
-                "wb"
-            ) as f:
-
-                f.write(
-                    response.content
-                )
-
-            downloaded.append(
-                local_file
-            )
-
-            print("OK")
-
-        except Exception as e:
-
-            print(
-                "Download error:",
-                e
-            )
-
-    return downloaded
-
-
-# ============================================================
-# ساخت DEM فارس
-# ============================================================
-
-def build_dem(
-    files,
-    boundary
-):
+def build_dem(boundary, urls):
 
     print()
     print(
-        "Building Fars DEM..."
+        "Opening DEM tiles remotely..."
     )
 
     datasets = []
 
     try:
 
-        for file in files:
+        for url in urls:
 
-            datasets.append(
-                rasterio.open(file)
+            print(
+                "Opening:",
+                url.split("/")[-2]
             )
+
+            try:
+
+                src = rasterio.open(
+                    "/vsicurl/" + url
+                )
+
+                datasets.append(src)
+
+            except Exception as e:
+
+                print(
+                    "Tile unavailable:",
+                    e
+                )
+
+        if not datasets:
+
+            raise RuntimeError(
+                "No DEM tile could be opened."
+            )
+
+        print()
+        print(
+            "Merging required DEM tiles..."
+        )
 
         mosaic, transform = merge(
             datasets
         )
 
-        source = datasets[0]
-
-        profile = source.profile.copy()
+        profile = datasets[0].profile.copy()
 
         profile.update(
             {
@@ -259,18 +231,19 @@ def build_dem(
                 "transform": transform,
                 "count": 1,
                 "dtype": "float32",
-                "compress": "deflate",
-                "nodata": -9999
+                "nodata": -9999,
+                "compress": "deflate"
             }
         )
-
-        # ----------------------------------------------------
-        # Clip
-        # ----------------------------------------------------
 
         temp_file = os.path.join(
             OUTPUT_DIR,
             "temp_dem.tif"
+        )
+
+        os.makedirs(
+            OUTPUT_DIR,
+            exist_ok=True
         )
 
         with rasterio.open(
@@ -281,16 +254,20 @@ def build_dem(
 
             dst.write(
                 mosaic[0].astype(
-                    "float32"
+                    np.float32
                 ),
                 1
             )
+
+        print(
+            "Clipping to Fars boundary..."
+        )
 
         with rasterio.open(
             temp_file
         ) as src:
 
-            clipped, clipped_transform = mask(
+            clipped, transform = mask(
                 src,
                 [mapping(boundary)],
                 crop=True,
@@ -303,7 +280,7 @@ def build_dem(
                 {
                     "height": clipped.shape[1],
                     "width": clipped.shape[2],
-                    "transform": clipped_transform,
+                    "transform": transform,
                     "count": 1,
                     "dtype": "float32",
                     "nodata": -9999,
@@ -319,24 +296,20 @@ def build_dem(
 
             dst.write(
                 clipped[0].astype(
-                    "float32"
+                    np.float32
                 ),
                 1
             )
 
-    finally:
-
-        for dataset in datasets:
-
-            dataset.close()
-
-    if os.path.exists(
-        temp_file
-    ):
-
         os.remove(
             temp_file
         )
+
+    finally:
+
+        for src in datasets:
+
+            src.close()
 
     print(
         "DEM created:",
@@ -352,7 +325,7 @@ def calculate_slope_aspect():
 
     print()
     print(
-        "Calculating slope and aspect..."
+        "Calculating Slope and Aspect..."
     )
 
     with rasterio.open(
@@ -362,12 +335,14 @@ def calculate_slope_aspect():
         dem = src.read(
             1
         ).astype(
-            "float32"
+            np.float32
         )
 
         profile = src.profile.copy()
 
         transform = src.transform
+
+        nodata = src.nodata
 
         xres = abs(
             transform.a
@@ -377,18 +352,18 @@ def calculate_slope_aspect():
             transform.e
         )
 
-        nodata = src.nodata
-
     valid = (
         dem != nodata
     )
 
-    # --------------------------------------------------------
-    # ارتفاع
-    # --------------------------------------------------------
+    dem_work = dem.copy()
 
-    dzdy, dzdx = np.gradient(
-        dem,
+    dem_work[
+        ~valid
+    ] = np.nan
+
+    dz_dy, dz_dx = np.gradient(
+        dem_work,
         yres,
         xres
     )
@@ -400,9 +375,9 @@ def calculate_slope_aspect():
     slope = np.degrees(
         np.arctan(
             np.sqrt(
-                dzdx ** 2
+                dz_dx ** 2
                 +
-                dzdy ** 2
+                dz_dy ** 2
             )
         )
     )
@@ -411,22 +386,16 @@ def calculate_slope_aspect():
     # Aspect
     # --------------------------------------------------------
 
-    aspect = np.degrees(
-        np.arctan2(
-            -dzdx,
-            dzdy
-        )
-    )
-
     aspect = (
-        360
+        180
         -
-        (aspect + 360) % 360
-    )
-
-    aspect[
-        aspect == 360
-    ] = 0
+        np.degrees(
+            np.arctan2(
+                dz_dx,
+                dz_dy
+            )
+        )
+    ) % 360
 
     slope[
         ~valid
@@ -445,10 +414,6 @@ def calculate_slope_aspect():
         }
     )
 
-    # --------------------------------------------------------
-    # Slope
-    # --------------------------------------------------------
-
     with rasterio.open(
         SLOPE_FILE,
         "w",
@@ -457,14 +422,10 @@ def calculate_slope_aspect():
 
         dst.write(
             slope.astype(
-                "float32"
+                np.float32
             ),
             1
         )
-
-    # --------------------------------------------------------
-    # Aspect
-    # --------------------------------------------------------
 
     with rasterio.open(
         ASPECT_FILE,
@@ -474,7 +435,7 @@ def calculate_slope_aspect():
 
         dst.write(
             aspect.astype(
-                "float32"
+                np.float32
             ),
             1
         )
@@ -498,39 +459,28 @@ def main():
 
     print("=" * 60)
     print(
-        "FARS-HRI | TOPOGRAPHY"
+        "FARS-HRI | LIGHT TOPOGRAPHY"
     )
     print(
-        "DEM + Slope + Aspect"
+        "Copernicus GLO-90"
     )
     print("=" * 60)
 
     boundary = load_boundary()
 
-    tiles = get_tiles(
+    urls = get_tile_urls(
         boundary
     )
 
     print()
     print(
-        "Required DEM tiles:",
-        len(tiles)
+        "Required tiles:",
+        len(urls)
     )
-
-    files = download_tiles(
-        tiles,
-        boundary
-    )
-
-    if not files:
-
-        raise RuntimeError(
-            "No DEM tiles downloaded."
-        )
 
     build_dem(
-        files,
-        boundary
+        boundary,
+        urls
     )
 
     calculate_slope_aspect()
@@ -542,5 +492,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
