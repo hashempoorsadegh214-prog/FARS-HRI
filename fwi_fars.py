@@ -1,47 +1,55 @@
-
 import json
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
-# ==========================================
-# FARS FWI - Copernicus EFFIS
-# ==========================================
+# ============================================================
+# FARS-HRI
+# دریافت پیش‌بینی FWI از Copernicus EFFIS / ECMWF
+# ============================================================
 
-API_URL = "https://api.effis.emergency.copernicus.eu/rest/2/burntareas/charts/wms"
+API_URL = (
+    "https://api.effis.emergency.copernicus.eu/"
+    "rest/2/burntareas/charts/wms"
+)
 
-# نقاط نمونه داخل استان فارس
+OUTPUT_FILE = "data/fwi/fwi_fars.json"
+
+MODEL = "ecmwf"
+
+# نقاط نماینده داخل استان فارس
 POINTS = [
     {"name": "Shiraz", "lon": 52.5837, "lat": 29.5918},
     {"name": "Fars_Center", "lon": 53.1525, "lat": 28.7438},
     {"name": "Fars_East", "lon": 53.5004, "lat": 28.3619},
 ]
 
-OUTPUT_FILE = "data/fwi_fars.json"
+# امروز و چند روز آینده
+TODAY = datetime.now(timezone.utc).date()
 
-# بازه داده
-START_DATE = "2026-08-23"
-END_DATE = "2026-09-03"
+START_DATE = TODAY.isoformat()
+END_DATE = (TODAY + timedelta(days=10)).isoformat()
+
+TIMEOUT = 30
 
 
-def get_fwi(point):
-    """
-    دریافت داده FWI برای یک نقطه از API رسمی EFFIS
-    """
+# ============================================================
+# دریافت داده از EFFIS
+# ============================================================
 
-    point_value = f"({point['lon']} {point['lat']})"
+def get_point_data(point):
 
     params = {
-        "model": "ecmwf",
+        "model": MODEL,
         "day_gte": START_DATE,
         "day_lte": END_DATE,
-        "point": point_value,
+        "point": f"({point['lon']} {point['lat']})",
     }
 
     response = requests.get(
         API_URL,
         params=params,
-        timeout=30
+        timeout=TIMEOUT
     )
 
     response.raise_for_status()
@@ -49,59 +57,124 @@ def get_fwi(point):
     return response.json()
 
 
+# ============================================================
+# تبدیل پاسخ API
+# ============================================================
+
+def parse_point(point, data):
+
+    dates = data.get("x_data", [])
+
+    y_data = data.get("y_data", {})
+
+    fwi = y_data.get("fwi", [])
+    ffmc = y_data.get("ffmc", [])
+    dmc = y_data.get("dmc", [])
+    dc = y_data.get("dc", [])
+    isi = y_data.get("isi", [])
+    bui = y_data.get("bui", [])
+
+    records = []
+
+    for i, date_value in enumerate(dates):
+
+        record = {
+            "date": date_value[:10]
+        }
+
+        if i < len(fwi):
+            record["fwi"] = round(float(fwi[i]), 2)
+
+        if i < len(ffmc):
+            record["ffmc"] = round(float(ffmc[i]), 2)
+
+        if i < len(dmc):
+            record["dmc"] = round(float(dmc[i]), 2)
+
+        if i < len(dc):
+            record["dc"] = round(float(dc[i]), 2)
+
+        if i < len(isi):
+            record["isi"] = round(float(isi[i]), 2)
+
+        if i < len(bui):
+            record["bui"] = round(float(bui[i]), 2)
+
+        records.append(record)
+
+    return {
+        "name": point["name"],
+        "lon": point["lon"],
+        "lat": point["lat"],
+        "records": records
+    }
+
+
+# ============================================================
+# برنامه اصلی
+# ============================================================
+
 def main():
 
-    os.makedirs("data", exist_ok=True)
+    print("=" * 60)
+    print("FARS-HRI | EFFIS ECMWF FWI")
+    print("=" * 60)
+
+    print(f"Start date : {START_DATE}")
+    print(f"End date   : {END_DATE}")
+    print()
 
     results = []
 
     for point in POINTS:
 
         print(
-            f"Getting FWI: "
+            f"Getting data for "
             f"{point['name']} "
             f"({point['lon']}, {point['lat']})"
         )
 
         try:
 
-            data = get_fwi(point)
+            data = get_point_data(point)
 
-            dates = data.get("x_data", [])
-            fwi_values = data.get("y_data", {}).get("fwi", [])
-
-            records = []
-
-            for date, fwi in zip(dates, fwi_values):
-
-                records.append({
-                    "date": date[:10],
-                    "fwi": round(float(fwi), 2)
-                })
-
-            results.append({
-                "name": point["name"],
-                "lon": point["lon"],
-                "lat": point["lat"],
-                "records": records
-            })
-
-            print(
-                f"  OK - {len(records)} FWI values"
+            parsed = parse_point(
+                point,
+                data
             )
+
+            count = len(parsed["records"])
+
+            print(f"  OK - {count} days")
+
+            results.append(parsed)
 
         except Exception as e:
 
-            print(
-                f"  ERROR: {e}"
-            )
+            print(f"  ERROR - {e}")
+
+    # --------------------------------------------------------
+    # خروجی
+    # --------------------------------------------------------
+
+    os.makedirs(
+        os.path.dirname(OUTPUT_FILE),
+        exist_ok=True
+    )
 
     output = {
-        "source": "Copernicus EFFIS",
+        "updated_at_utc": datetime.now(
+            timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S"),
+
         "model": "ECMWF",
-        "updated_at_utc": datetime.utcnow().isoformat(),
+
+        "source": "Copernicus EFFIS",
+
         "start_date": START_DATE,
+
         "end_date": END_DATE,
+
         "points": results
     }
 
@@ -119,12 +192,22 @@ def main():
         )
 
     print()
-    print("==========================================")
-    print("FWI file created:")
-    print(OUTPUT_FILE)
-    print("==========================================")
+    print("=" * 60)
+    print("DONE")
+    print("=" * 60)
 
+    print(
+        f"Output: {OUTPUT_FILE}"
+    )
+
+    print(
+        f"Points: {len(results)}"
+    )
+
+
+# ============================================================
+# اجرا
+# ============================================================
 
 if __name__ == "__main__":
     main()
-
