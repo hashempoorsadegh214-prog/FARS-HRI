@@ -1,217 +1,229 @@
+```python
 import os
 import json
+import zipfile
+import urllib.request
+import shutil
 
-import numpy as np
 import rasterio
+from rasterio.mask import mask
 
 
 # ============================================================
 # FARS-HRI
-# Fuel Processing
-# Source:
-# Pettinari et al. - Global Fuelbed Dataset
-# PANGAEA DOI: 10.1594/PANGAEA.849808
+# Download official Global Fuelbed Dataset from PANGAEA
+# Clip it to Fars Province
 # ============================================================
 
-INPUT_FILE = "data/fuel/fars_fuel.tif"
+FUEL_URL = (
+    "https://store.pangaea.de/Publications/Pettinari_2015/"
+    "Global_fuelbeds_map_Tile4.zip"
+)
+
+ZIP_FILE = "temp_fuel_tile4.zip"
+EXTRACT_DIR = "temp_fuel_tile4"
+
+BOUNDARY_FILE = "fars.geojson"
 
 OUTPUT_DIR = "data/fuel"
-
-OUTPUT_FILE = os.path.join(
-    OUTPUT_DIR,
-    "fars_fuel_processed.tif"
-)
-
-STATS_FILE = os.path.join(
-    OUTPUT_DIR,
-    "fars_fuel_stats.json"
-)
+OUTPUT_FILE = "data/fuel/fars_fuel.tif"
+STATS_FILE = "data/fuel/fars_fuel_stats.json"
 
 
-# ============================================================
-# پردازش Fuel
-# ============================================================
+def download_file():
 
-def main():
+    print("Downloading official Fuelbed Tile 4...")
 
-    print("=" * 60)
-    print("FARS-HRI | FUEL PROCESSING")
-    print("=" * 60)
+    urllib.request.urlretrieve(
+        FUEL_URL,
+        ZIP_FILE
+    )
 
-    if not os.path.exists(INPUT_FILE):
+    print("Download complete.")
 
-        raise FileNotFoundError(
-            f"Fuel file not found: {INPUT_FILE}"
+
+def extract_file():
+
+    print("Extracting Tile 4...")
+
+    if os.path.exists(EXTRACT_DIR):
+        shutil.rmtree(EXTRACT_DIR)
+
+    with zipfile.ZipFile(
+        ZIP_FILE,
+        "r"
+    ) as zip_ref:
+
+        zip_ref.extractall(
+            EXTRACT_DIR
         )
+
+    print("Extraction complete.")
+
+
+def find_tif():
+
+    for root, dirs, files in os.walk(
+        EXTRACT_DIR
+    ):
+
+        for file in files:
+
+            if file.lower().endswith(".tif"):
+
+                return os.path.join(
+                    root,
+                    file
+                )
+
+    raise FileNotFoundError(
+        "Fuel GeoTIFF not found inside ZIP."
+    )
+
+
+def load_boundary():
+
+    print("Reading Fars boundary...")
+
+    with open(
+        BOUNDARY_FILE,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        boundary = json.load(f)
+
+    if boundary["type"] == "FeatureCollection":
+
+        geometries = [
+            feature["geometry"]
+            for feature in boundary["features"]
+            if feature.get("geometry")
+        ]
+
+    elif boundary["type"] == "Feature":
+
+        geometries = [
+            boundary["geometry"]
+        ]
+
+    else:
+
+        geometries = [
+            boundary
+        ]
+
+    return geometries
+
+
+def clip_fuel():
+
+    fuel_tif = find_tif()
+
+    geometries = load_boundary()
 
     os.makedirs(
         OUTPUT_DIR,
         exist_ok=True
     )
 
-    print()
-    print("Input:")
-    print(INPUT_FILE)
-
-    # --------------------------------------------------------
-    # خواندن Raster
-    # --------------------------------------------------------
+    print("Clipping Fuel map to Fars...")
 
     with rasterio.open(
-        INPUT_FILE
+        fuel_tif
     ) as src:
 
-        data = src.read(
-            1
-        ).astype(
-            np.float32
+        clipped, transform = mask(
+            src,
+            geometries,
+            crop=True,
+            filled=True,
+            nodata=src.nodata
         )
 
         profile = src.profile.copy()
 
-        nodata = src.nodata
-
-        transform = src.transform
-
-        crs = src.crs
-
-    print()
-    print("CRS:", crs)
-
-    print(
-        "Raster size:",
-        data.shape[1],
-        "x",
-        data.shape[0]
-    )
-
-    # --------------------------------------------------------
-    # تعیین NoData
-    # --------------------------------------------------------
-
-    if nodata is None:
-
-        nodata = -9999
-
-    valid = (
-        np.isfinite(data)
-        &
-        (data != nodata)
-    )
-
-    valid_values = data[
-        valid
-    ]
-
-    if len(valid_values) == 0:
-
-        raise RuntimeError(
-            "No valid Fuel values found."
+        profile.update(
+            {
+                "height": clipped.shape[1],
+                "width": clipped.shape[2],
+                "transform": transform,
+                "compress": "deflate"
+            }
         )
 
-    # --------------------------------------------------------
-    # آمار
-    # --------------------------------------------------------
+        with rasterio.open(
+            OUTPUT_FILE,
+            "w",
+            **profile
+        ) as dst:
 
-    minimum = float(
-        np.min(valid_values)
-    )
+            dst.write(
+                clipped
+            )
 
-    maximum = float(
-        np.max(valid_values)
-    )
+    print("Fars Fuel map created.")
 
-    mean = float(
-        np.mean(valid_values)
-    )
 
-    print()
-    print("Fuel statistics:")
-    print(
-        "Min :",
-        minimum
-    )
-    print(
-        "Max :",
-        maximum
-    )
-    print(
-        "Mean:",
-        mean
-    )
-
-    # --------------------------------------------------------
-    # خروجی
-    # --------------------------------------------------------
-
-    profile.update(
-        {
-            "dtype": "float32",
-            "count": 1,
-            "nodata": -9999,
-            "compress": "deflate"
-        }
-    )
-
-    output_data = data.copy()
-
-    output_data[
-        ~valid
-    ] = -9999
+def create_stats():
 
     with rasterio.open(
-        OUTPUT_FILE,
-        "w",
-        **profile
-    ) as dst:
+        OUTPUT_FILE
+    ) as src:
 
-        dst.write(
-            output_data,
-            1
+        data = src.read(1)
+
+        nodata = src.nodata
+
+        valid = data
+
+        if nodata is not None:
+
+            valid = data[
+                data != nodata
+            ]
+
+        unique_values = sorted(
+            [
+                int(value)
+                for value in set(
+                    valid.flatten()
+                )
+            ]
         )
 
-    # --------------------------------------------------------
-    # ذخیره Metadata
-    # --------------------------------------------------------
+        stats = {
+            "source": (
+                "Global Fuelbed Dataset"
+            ),
 
-    stats = {
+            "citation": (
+                "Pettinari, M. L. (2015): "
+                "Global Fuelbed Dataset. "
+                "PANGAEA. "
+                "https://doi.org/10.1594/PANGAEA.849808"
+            ),
 
-        "source": (
-            "Global Fuelbed Dataset"
-        ),
+            "source_file": (
+                "Global_fuelbeds_map_Tile4"
+            ),
 
-        "provider": (
-            "Pettinari et al."
-        ),
+            "output_file": OUTPUT_FILE,
 
-        "pangaea_doi": (
-            "10.1594/PANGAEA.849808"
-        ),
+            "crs": str(
+                src.crs
+            ),
 
-        "input": INPUT_FILE,
+            "width": src.width,
 
-        "output": OUTPUT_FILE,
+            "height": src.height,
 
-        "minimum": minimum,
+            "fuelbed_classes": unique_values,
 
-        "maximum": maximum,
-
-        "mean": mean,
-
-        "valid_pixels": int(
-            len(valid_values)
-        ),
-
-        "crs": str(crs),
-
-        "pixel_width": float(
-            transform.a
-        ),
-
-        "pixel_height": float(
-            abs(transform.e)
-        )
-    }
+            "fuelbed_class_count": len(
+                unique_values
+            )
+        }
 
     with open(
         STATS_FILE,
@@ -226,29 +238,60 @@ def main():
             indent=2
         )
 
-    print()
+    print("Fuel statistics created.")
+
+
+def cleanup():
+
+    print("Cleaning temporary files...")
+
+    if os.path.exists(ZIP_FILE):
+
+        os.remove(
+            ZIP_FILE
+        )
+
+    if os.path.exists(EXTRACT_DIR):
+
+        shutil.rmtree(
+            EXTRACT_DIR
+        )
+
+
+def main():
+
     print("=" * 60)
-    print("DONE")
+    print("FARS-HRI | FUEL DATA")
     print("=" * 60)
 
-    print()
-    print(
-        "Processed Fuel:"
-    )
+    try:
 
-    print(
-        OUTPUT_FILE
-    )
+        download_file()
 
-    print()
-    print(
-        "Statistics:"
-    )
+        extract_file()
 
-    print(
-        STATS_FILE
-    )
+        clip_fuel()
+
+        create_stats()
+
+        print()
+        print("=" * 60)
+        print("DONE")
+        print("=" * 60)
+
+        print(
+            f"Output: {OUTPUT_FILE}"
+        )
+
+        print(
+            f"Stats: {STATS_FILE}"
+        )
+
+    finally:
+
+        cleanup()
 
 
 if __name__ == "__main__":
     main()
+```
