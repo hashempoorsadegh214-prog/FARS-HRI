@@ -1,4 +1,4 @@
-```yaml
+
 name: Update Fuel Data
 
 on:
@@ -34,4 +34,3 @@ jobs:
           git add data/fuel/
           git diff --cached --quiet || git commit -m "Update Fars Fuel data"
           git push
-```
