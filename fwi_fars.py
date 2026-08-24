@@ -1,3 +1,4 @@
+```python
 import json
 import os
 import requests
@@ -5,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 # ============================================================
 # FARS-HRI
-# دریافت پیش‌بینی FWI از Copernicus EFFIS / ECMWF
+# دریافت پیش‌بینی FWI از Copernicus EFFIS / Meteo-France
 # ============================================================
 
 API_URL = (
@@ -15,7 +16,8 @@ API_URL = (
 
 OUTPUT_FILE = "data/fwi/fwi_fars.json"
 
-MODEL = "ecmwf"
+# مدل Meteo-France
+MODEL = "mf"
 
 # نقاط نماینده داخل استان فارس
 POINTS = [
@@ -24,11 +26,11 @@ POINTS = [
     {"name": "Fars_East", "lon": 53.5004, "lat": 28.3619},
 ]
 
-# امروز و چند روز آینده
+# امروز تا 3 روز آینده
 TODAY = datetime.now(timezone.utc).date()
 
 START_DATE = TODAY.isoformat()
-END_DATE = (TODAY + timedelta(days=10)).isoformat()
+END_DATE = (TODAY + timedelta(days=3)).isoformat()
 
 TIMEOUT = 30
 
@@ -117,9 +119,10 @@ def parse_point(point, data):
 def main():
 
     print("=" * 60)
-    print("FARS-HRI | EFFIS ECMWF FWI")
+    print("FARS-HRI | EFFIS Meteo-France FWI")
     print("=" * 60)
 
+    print(f"Model      : {MODEL}")
     print(f"Start date : {START_DATE}")
     print(f"End date   : {END_DATE}")
     print()
@@ -129,7 +132,7 @@ def main():
     for point in POINTS:
 
         print(
-            f"Getting data for "
+            f"Getting Meteo-France data for "
             f"{point['name']} "
             f"({point['lon']}, {point['lat']})"
         )
@@ -167,7 +170,7 @@ def main():
             timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S"),
 
-        "model": "ECMWF",
+        "model": "Meteo-France",
 
         "source": "Copernicus EFFIS",
 
@@ -211,3 +214,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
