@@ -1,4 +1,4 @@
-```python
+
 import os
 import json
 import zipfile
@@ -580,5 +580,4 @@ def main():
 if __name__ == "__main__":
 
     main()
-```
 
