@@ -1,527 +1,258 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-FARS-HRI | Download validated gridded Fire Weather Index for Fars Province
+اعتبارسنجی دادهٔ شبکه‌ای FWI استان فارس.
 
-Source:
-    Copernicus EFFIS / GWIS
-    Meteorological model: Meteo-France
-    Layer: mf010.fwi
-    Service: EFFIS forecast WMS
+سیاست پروژه:
+    دادهٔ FWI از فایل شبکه‌ای محلی و معتبر زیر خوانده می‌شود:
+        data/fwi/fwi_fars_grid.json
 
-Outputs, only when a valid non-zero raster is received:
-    data/fwi/fwi_fars.tif
-    data/fwi/fwi_fars_metadata.json
+    این اسکریپت عمداً هیچ درخواست WMS، EFFIS یا ECMWF ارسال نمی‌کند.
+    دانلود مستقیم WMS در مراحل قبلی ناپایدار بود و با خطای HTTP 404
+    مواجه می‌شد.
 
-Optional:
-    Set FWI_DATE to request a specific forecast date.
+وظیفه:
+    1. بررسی وجود فایل JSON گریدی FWI
+    2. شناسایی رکوردهای دارای lat، lon و fwi
+    3. اعتبارسنجی مختصات، مقادیر FWI و نقاط تکراری
+    4. ثبت خلاصهٔ داده در خروجی اجرای GitHub Actions
 
-Example:
-    FWI_DATE=2026-08-27 python scripts/update_fwi.py
+خروجی:
+    در صورت معتبر بودن داده، برنامه با exit code صفر تمام می‌شود.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
-from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import geopandas as gpd
 import numpy as np
-import requests
-import rasterio
-from rasterio.io import MemoryFile
-from rasterio.mask import mask
 
 
 # ---------------------------------------------------------------------
-# Project files
+# مسیرهای پروژه
 # ---------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-FARS_BOUNDARY_FILE = PROJECT_ROOT / "fars.geojson"
+FWI_JSON_PATH = PROJECT_ROOT / "data" / "fwi" / "fwi_fars_grid.json"
 
-OUTPUT_DIRECTORY = PROJECT_ROOT / "data" / "fwi"
-OUTPUT_RASTER_FILE = OUTPUT_DIRECTORY / "fwi_fars.tif"
-OUTPUT_METADATA_FILE = OUTPUT_DIRECTORY / "fwi_fars_metadata.json"
-
-
-# ---------------------------------------------------------------------
-# Copernicus EFFIS / GWIS forecast WMS settings
-# ---------------------------------------------------------------------
-
-# Important: "effist" is the forecast endpoint.
-WMS_URL = "https://maps.effis.emergency.copernicus.eu/effist"
-
-WMS_VERSION = "1.3.0"
-WMS_LAYER = "mf010.fwi"
-
-# CRS:84 keeps BBOX axis order fixed as longitude, latitude.
-WMS_CRS = "CRS:84"
-WMS_FORMAT = "image/tiff"
-
-HTTP_TIMEOUT_SECONDS = 120
-
-# Native layer resolution is approximately 10 km.
-# These dimensions are appropriate for the Fars extent.
-REQUEST_WIDTH = 180
-REQUEST_HEIGHT = 150
-
-# Small geographic margin before clipping exactly to the province boundary.
-BBOX_BUFFER_DEGREES = 0.08
-
-# Reject empty and all-zero TIFF responses.
-MINIMUM_VALID_FWI = 0.01
+# دامنهٔ مورد انتظار برای دادهٔ شبکه‌ای فارس
+MIN_EXPECTED_POINT_COUNT = 1000
+MIN_EXPECTED_LON = 49.0
+MAX_EXPECTED_LON = 56.0
+MIN_EXPECTED_LAT = 26.0
+MAX_EXPECTED_LAT = 33.0
 
 
 # ---------------------------------------------------------------------
-# Utility functions
+# خواندن داده
 # ---------------------------------------------------------------------
 
-def save_json(file_path: Path, content: dict[str, Any]) -> None:
-    """Save formatted UTF-8 JSON."""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+def find_point_records(data: Any) -> list[dict[str, Any]]:
+    """
+    آرایه‌ای از رکوردهای دارای lat، lon و fwi را در JSON پیدا می‌کند.
 
-    with file_path.open("w", encoding="utf-8") as file:
-        json.dump(content, file, ensure_ascii=False, indent=2)
-        file.write("\n")
+    فایل ممکن است دارای یک لایهٔ متادیتا یا کلیدهای تو در تو باشد؛
+    بنابراین نام کلید بیرونی ثابت فرض نمی‌شود.
+    """
+    if isinstance(data, list):
+        if data and all(
+            isinstance(item, dict)
+            and {"lat", "lon", "fwi"}.issubset(item.keys())
+            for item in data
+        ):
+            return data
+
+        for item in data:
+            result = find_point_records(item)
+            if result:
+                return result
+
+    if isinstance(data, dict):
+        for value in data.values():
+            result = find_point_records(value)
+            if result:
+                return result
+
+    return []
 
 
-def read_fars_boundary() -> gpd.GeoDataFrame:
-    """Read Fars Province boundary and ensure EPSG:4326 coordinates."""
-    if not FARS_BOUNDARY_FILE.exists():
+def load_and_validate_fwi_data(
+    json_path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    JSON را می‌خواند، رکوردهای FWI را استخراج می‌کند و اعتبارسنجی انجام می‌دهد.
+    """
+    if not json_path.exists():
         raise FileNotFoundError(
-            f"Boundary file not found: {FARS_BOUNDARY_FILE}"
+            "فایل گرید FWI پیدا نشد.\n\n"
+            f"مسیر مورد انتظار:\n{json_path}\n\n"
+            "فایل دادهٔ معتبر FWI را با نام زیر در مخزن قرار دهید:\n"
+            "data/fwi/fwi_fars_grid.json"
         )
 
-    boundary = gpd.read_file(FARS_BOUNDARY_FILE)
+    if json_path.stat().st_size == 0:
+        raise ValueError(
+            f"فایل گرید FWI خالی است:\n{json_path}"
+        )
 
-    if boundary.empty:
-        raise ValueError("fars.geojson contains no geographic features.")
+    try:
+        with json_path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"ساختار JSON فایل FWI معتبر نیست:\n{json_path}\n"
+            f"جزئیات خطا: {exc}"
+        ) from exc
 
-    if boundary.crs is None:
-        boundary = boundary.set_crs("EPSG:4326")
-    else:
-        boundary = boundary.to_crs("EPSG:4326")
+    records = find_point_records(data)
 
-    return boundary
+    if not records:
+        raise ValueError(
+            "هیچ آرایه‌ای شامل رکوردهای FWI با کلیدهای "
+            "'lat'، 'lon' و 'fwi' در فایل JSON پیدا نشد."
+        )
 
+    longitudes: list[float] = []
+    latitudes: list[float] = []
+    fwi_values: list[float] = []
 
-def get_fars_bbox(
-    boundary: gpd.GeoDataFrame,
-) -> tuple[float, float, float, float]:
-    """Return buffered BBOX as min_lon, min_lat, max_lon, max_lat."""
-    min_lon, min_lat, max_lon, max_lat = boundary.total_bounds
-
-    return (
-        float(min_lon - BBOX_BUFFER_DEGREES),
-        float(min_lat - BBOX_BUFFER_DEGREES),
-        float(max_lon + BBOX_BUFFER_DEGREES),
-        float(max_lat + BBOX_BUFFER_DEGREES),
-    )
-
-
-def get_candidate_dates() -> list[date]:
-    """
-    Return forecast dates to try.
-
-    If FWI_DATE is defined, only that exact date is used.
-    Otherwise, try yesterday through three days ahead. This covers the
-    normal EFFIS forecast window and publication-time differences.
-    """
-    requested_date = os.getenv("FWI_DATE", "").strip()
-
-    if requested_date:
+    for index, record in enumerate(records, start=1):
         try:
-            return [date.fromisoformat(requested_date)]
-        except ValueError as error:
+            longitude = float(record["lon"])
+            latitude = float(record["lat"])
+            fwi_value = float(record["fwi"])
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
-                "FWI_DATE must use YYYY-MM-DD format. "
-                f"Received: {requested_date!r}"
-            ) from error
+                f"رکورد شمارهٔ {index} معتبر نیست:\n{record}"
+            ) from exc
 
-    today = date.today()
+        if not np.isfinite(longitude):
+            raise ValueError(f"طول جغرافیایی نامعتبر در رکورد {index}: {longitude}")
 
-    return [
-        today - timedelta(days=1),
-        today,
-        today + timedelta(days=1),
-        today + timedelta(days=2),
-        today + timedelta(days=3),
-    ]
+        if not np.isfinite(latitude):
+            raise ValueError(f"عرض جغرافیایی نامعتبر در رکورد {index}: {latitude}")
 
+        if not np.isfinite(fwi_value):
+            raise ValueError(f"مقدار FWI نامعتبر در رکورد {index}: {fwi_value}")
 
-# ---------------------------------------------------------------------
-# Download and validation
-# ---------------------------------------------------------------------
+        if not (-180.0 <= longitude <= 180.0):
+            raise ValueError(f"طول جغرافیایی خارج از دامنه در رکورد {index}: {longitude}")
 
-def request_fwi_tiff(
-    bbox: tuple[float, float, float, float],
-    forecast_date: date,
-) -> bytes:
-    """Download one FWI GeoTIFF request from the EFFIS forecast WMS."""
-    min_lon, min_lat, max_lon, max_lat = bbox
+        if not (-90.0 <= latitude <= 90.0):
+            raise ValueError(f"عرض جغرافیایی خارج از دامنه در رکورد {index}: {latitude}")
 
-    parameters = {
-        "SERVICE": "WMS",
-        "VERSION": WMS_VERSION,
-        "REQUEST": "GetMap",
-        "LAYERS": WMS_LAYER,
-        "STYLES": "",
-        "CRS": WMS_CRS,
-        "BBOX": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-        "WIDTH": REQUEST_WIDTH,
-        "HEIGHT": REQUEST_HEIGHT,
-        "FORMAT": WMS_FORMAT,
-        "TRANSPARENT": "FALSE",
-        "TIME": forecast_date.isoformat(),
-    }
+        if fwi_value < 0.0:
+            raise ValueError(f"مقدار منفی FWI در رکورد {index}: {fwi_value}")
 
-    response = requests.get(
-        WMS_URL,
-        params=parameters,
-        timeout=HTTP_TIMEOUT_SECONDS,
-    )
+        longitudes.append(longitude)
+        latitudes.append(latitude)
+        fwi_values.append(fwi_value)
 
-    content_type = response.headers.get("Content-Type", "").lower()
-    response_start = response.content.lstrip()[:100].lower()
+    lon_array = np.asarray(longitudes, dtype=np.float64)
+    lat_array = np.asarray(latitudes, dtype=np.float64)
+    fwi_array = np.asarray(fwi_values, dtype=np.float32)
 
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"WMS request returned HTTP {response.status_code}: "
-            f"{response.text[:1000]}"
+    if len(fwi_array) < MIN_EXPECTED_POINT_COUNT:
+        raise ValueError(
+            "تعداد نقاط FWI کمتر از حد قابل‌قبول است.\n"
+            f"تعداد موجود: {len(fwi_array):,}\n"
+            f"حداقل مورد انتظار: {MIN_EXPECTED_POINT_COUNT:,}\n\n"
+            "به‌جای دادهٔ نقطه‌ای یا ناقص، فایل گریدی کامل فارس را استفاده کنید."
         )
 
-    # WMS errors can return HTTP 200 together with XML or plain text.
+    coordinates = np.column_stack((lon_array, lat_array))
+    unique_coordinates = np.unique(coordinates, axis=0)
+
+    if len(unique_coordinates) != len(coordinates):
+        duplicate_count = len(coordinates) - len(unique_coordinates)
+        raise ValueError(
+            "مختصات تکراری در دادهٔ FWI وجود دارد.\n"
+            f"تعداد نقاط تکراری: {duplicate_count:,}"
+        )
+
     if (
-        "xml" in content_type
-        or "text" in content_type
-        or response_start.startswith(b"<?xml")
-        or response_start.startswith(b"<serviceexception")
+        lon_array.min() < MIN_EXPECTED_LON
+        or lon_array.max() > MAX_EXPECTED_LON
+        or lat_array.min() < MIN_EXPECTED_LAT
+        or lat_array.max() > MAX_EXPECTED_LAT
     ):
-        raise RuntimeError(
-            "WMS returned a service message instead of a GeoTIFF: "
-            f"{response.text[:1500]}"
+        raise ValueError(
+            "محدودهٔ مختصات داده با محدودهٔ منطقی استان فارس سازگار نیست.\n"
+            f"Lon: {lon_array.min():.4f} تا {lon_array.max():.4f}\n"
+            f"Lat: {lat_array.min():.4f} تا {lat_array.max():.4f}"
         )
 
-    if len(response.content) < 500:
-        raise RuntimeError(
-            "WMS response is too small to be a valid GeoTIFF."
+    return lon_array, lat_array, fwi_array
+
+
+# ---------------------------------------------------------------------
+# اجرای اصلی
+# ---------------------------------------------------------------------
+
+def main() -> int:
+    """اجرای اعتبارسنجی فایل گریدی FWI."""
+    print("=" * 70)
+    print("اعتبارسنجی دادهٔ شبکه‌ای FWI فارس")
+    print("=" * 70)
+    print("حالت داده: Local gridded JSON")
+    print("درخواست WMS/اینترنت: غیرفعال")
+    print()
+
+    try:
+        longitudes, latitudes, fwi_values = load_and_validate_fwi_data(
+            FWI_JSON_PATH
         )
 
-    return response.content
+        unique_lons = np.unique(longitudes)
+        unique_lats = np.unique(latitudes)
 
+        lon_steps = np.diff(unique_lons)
+        lat_steps = np.diff(unique_lats)
 
-def inspect_downloaded_tiff(raster_bytes: bytes) -> dict[str, Any]:
-    """
-    Validate the downloaded TIFF before it can overwrite the current output.
+        lon_step = float(np.median(lon_steps)) if len(lon_steps) else 0.0
+        lat_step = float(np.median(lat_steps)) if len(lat_steps) else 0.0
 
-    A valid grid must be:
-    - exactly one numeric band;
-    - non-empty;
-    - not entirely zero;
-    - spatially variable (more than one unique value).
-    """
-    with MemoryFile(raster_bytes) as memory_file:
-        with memory_file.open() as dataset:
-            if dataset.count != 1:
-                return {
-                    "valid": False,
-                    "reason": (
-                        "Expected one numeric FWI band, "
-                        f"but received {dataset.count} bands."
-                    ),
-                }
+        print(f"فایل معتبر: {FWI_JSON_PATH}")
+        print(f"تعداد نقاط: {len(fwi_values):,}")
+        print(
+            f"محدودهٔ طول جغرافیایی: "
+            f"{longitudes.min():.4f} تا {longitudes.max():.4f}"
+        )
+        print(
+            f"محدودهٔ عرض جغرافیایی: "
+            f"{latitudes.min():.4f} تا {latitudes.max():.4f}"
+        )
+        print(f"تعداد طول‌های یکتا: {len(unique_lons):,}")
+        print(f"تعداد عرض‌های یکتا: {len(unique_lats):,}")
+        print(f"گام تقریبی طولی شبکه: {lon_step:.4f} درجه")
+        print(f"گام تقریبی عرضی شبکه: {lat_step:.4f} درجه")
+        print(
+            f"FWI حداقل: {fwi_values.min():.3f} | "
+            f"حداکثر: {fwi_values.max():.3f} | "
+            f"میانگین: {fwi_values.mean():.3f}"
+        )
+        print()
+        print("دادهٔ FWI معتبر است. ✅")
+        print(
+            "مرحلهٔ بعدی: اجرای scripts/build_fwi_raster.py "
+            "برای تولید data/fwi/fwi_fars.tif"
+        )
 
-            data_type = np.dtype(dataset.dtypes[0])
+        return 0
 
-            if not np.issubdtype(data_type, np.number):
-                return {
-                    "valid": False,
-                    "reason": (
-                        f"FWI raster band is not numeric: {dataset.dtypes[0]}"
-                    ),
-                }
-
-            values = dataset.read(1, masked=True)
-            valid_values = values.compressed()
-
-            if valid_values.size == 0:
-                return {
-                    "valid": False,
-                    "reason": "Downloaded TIFF contains no valid pixels.",
-                }
-
-            minimum = float(np.min(valid_values))
-            maximum = float(np.max(valid_values))
-            mean = float(np.mean(valid_values))
-            unique_count = int(np.unique(valid_values).size)
-
-            if maximum <= MINIMUM_VALID_FWI:
-                return {
-                    "valid": False,
-                    "reason": (
-                        "Downloaded TIFF contains only zero or near-zero "
-                        "values, so it is not a usable FWI grid."
-                    ),
-                    "minimum": minimum,
-                    "maximum": maximum,
-                    "mean": mean,
-                    "unique_value_count": unique_count,
-                }
-
-            if unique_count <= 1:
-                return {
-                    "valid": False,
-                    "reason": (
-                        "Downloaded TIFF has only one unique value and is "
-                        "not a usable spatial FWI grid."
-                    ),
-                    "minimum": minimum,
-                    "maximum": maximum,
-                    "mean": mean,
-                    "unique_value_count": unique_count,
-                }
-
-            return {
-                "valid": True,
-                "reason": "Non-zero, spatially variable numeric FWI grid received.",
-                "crs": str(dataset.crs),
-                "band_count": int(dataset.count),
-                "dtype": dataset.dtypes[0],
-                "width_pixels": int(dataset.width),
-                "height_pixels": int(dataset.height),
-                "nodata_value": dataset.nodata,
-                "minimum": minimum,
-                "maximum": maximum,
-                "mean": mean,
-                "unique_value_count": unique_count,
-            }
-
-
-# ---------------------------------------------------------------------
-# Clip and write final output
-# ---------------------------------------------------------------------
-
-def clip_and_save_fwi(
-    raster_bytes: bytes,
-    boundary: gpd.GeoDataFrame,
-) -> dict[str, Any]:
-    """
-    Clip the validated WMS GeoTIFF to Fars and write the final raster.
-
-    The old output is replaced only after successful validation and writing.
-    """
-    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-
-    with MemoryFile(raster_bytes) as memory_file:
-        with memory_file.open() as source:
-            if source.crs is None:
-                raise RuntimeError(
-                    "Downloaded GeoTIFF has no CRS and cannot be clipped safely."
-                )
-
-            boundary_in_raster_crs = boundary.to_crs(source.crs)
-
-            clipped_data, clipped_transform = mask(
-                source,
-                boundary_in_raster_crs.geometry,
-                crop=True,
-                filled=True,
-                nodata=source.nodata,
-            )
-
-            clipped_values = clipped_data[0]
-
-            if source.nodata is not None:
-                clipped_values = clipped_values[
-                    clipped_values != source.nodata
-                ]
-
-            if clipped_values.size == 0:
-                raise RuntimeError(
-                    "No valid FWI pixels remain after clipping to Fars."
-                )
-
-            clipped_minimum = float(np.min(clipped_values))
-            clipped_maximum = float(np.max(clipped_values))
-            clipped_mean = float(np.mean(clipped_values))
-            clipped_unique_count = int(np.unique(clipped_values).size)
-
-            if clipped_maximum <= MINIMUM_VALID_FWI:
-                raise RuntimeError(
-                    "All FWI values are zero after clipping to Fars. "
-                    "The old output was preserved."
-                )
-
-            if clipped_unique_count <= 1:
-                raise RuntimeError(
-                    "FWI raster is uniform after clipping to Fars. "
-                    "The old output was preserved."
-                )
-
-            profile = source.profile.copy()
-            profile.update(
-                driver="GTiff",
-                height=clipped_data.shape[1],
-                width=clipped_data.shape[2],
-                transform=clipped_transform,
-                compress="deflate",
-                tiled=False,
-            )
-
-            temporary_file = OUTPUT_RASTER_FILE.with_suffix(".temporary.tif")
-
-            with rasterio.open(temporary_file, "w", **profile) as output:
-                output.write(clipped_data)
-
-            temporary_file.replace(OUTPUT_RASTER_FILE)
-
-            return {
-                "source_crs": str(source.crs),
-                "band_count": int(clipped_data.shape[0]),
-                "width_pixels": int(clipped_data.shape[2]),
-                "height_pixels": int(clipped_data.shape[1]),
-                "nodata_value": source.nodata,
-                "minimum_after_clip": clipped_minimum,
-                "maximum_after_clip": clipped_maximum,
-                "mean_after_clip": clipped_mean,
-                "unique_value_count_after_clip": clipped_unique_count,
-            }
-
-
-# ---------------------------------------------------------------------
-# Main execution
-# ---------------------------------------------------------------------
-
-def main() -> None:
-    """Download a valid FWI grid and save it for the FARS-HRI pipeline."""
-    fars_boundary = read_fars_boundary()
-    bbox = get_fars_bbox(fars_boundary)
-    candidate_dates = get_candidate_dates()
-
-    print("Starting FARS-HRI gridded FWI update...")
-    print(f"Source endpoint: {WMS_URL}")
-    print(f"Layer: {WMS_LAYER}")
-    print(
-        "Fars request BBOX: "
-        f"{bbox[0]:.6f}, {bbox[1]:.6f}, "
-        f"{bbox[2]:.6f}, {bbox[3]:.6f}"
-    )
-
-    attempts: list[dict[str, str]] = []
-
-    for forecast_date in candidate_dates:
-        print(f"\nTrying FWI date: {forecast_date.isoformat()}")
-
-        try:
-            raster_bytes = request_fwi_tiff(
-                bbox=bbox,
-                forecast_date=forecast_date,
-            )
-
-            validation = inspect_downloaded_tiff(raster_bytes)
-
-            if not validation["valid"]:
-                reason = str(validation["reason"])
-                print(f"Rejected: {reason}")
-
-                attempts.append(
-                    {
-                        "date": forecast_date.isoformat(),
-                        "result": "rejected",
-                        "reason": reason,
-                    }
-                )
-                continue
-
-            clipped_information = clip_and_save_fwi(
-                raster_bytes=raster_bytes,
-                boundary=fars_boundary,
-            )
-
-            metadata = {
-                "project": "FARS-HRI",
-                "updated_at_utc": datetime.now(timezone.utc)
-                .replace(microsecond=0)
-                .isoformat(),
-                "meteorological_source": "Copernicus EFFIS / GWIS",
-                "meteorological_model": "Meteo-France",
-                "variable": "Fire Weather Index (FWI)",
-                "service": "EFFIS forecast WMS",
-                "endpoint": WMS_URL,
-                "wms_version": WMS_VERSION,
-                "layer": WMS_LAYER,
-                "selected_forecast_date": forecast_date.isoformat(),
-                "approximate_native_resolution": "~10 km",
-                "boundary_file": str(
-                    FARS_BOUNDARY_FILE.relative_to(PROJECT_ROOT)
-                ),
-                "output_file": str(
-                    OUTPUT_RASTER_FILE.relative_to(PROJECT_ROOT)
-                ),
-                "wms_request": {
-                    "crs": WMS_CRS,
-                    "bbox": {
-                        "min_longitude": bbox[0],
-                        "min_latitude": bbox[1],
-                        "max_longitude": bbox[2],
-                        "max_latitude": bbox[3],
-                    },
-                    "width_pixels": REQUEST_WIDTH,
-                    "height_pixels": REQUEST_HEIGHT,
-                },
-                "download_validation": validation,
-                "clipped_raster_information": clipped_information,
-                "attempts": attempts
-                + [
-                    {
-                        "date": forecast_date.isoformat(),
-                        "result": "accepted",
-                        "reason": str(validation["reason"]),
-                    }
-                ],
-            }
-
-            save_json(OUTPUT_METADATA_FILE, metadata)
-
-            print("\nSuccess: valid FWI grid saved.")
-            print(f"Selected date: {forecast_date.isoformat()}")
-            print(f"Raster: {OUTPUT_RASTER_FILE}")
-            print(f"Metadata: {OUTPUT_METADATA_FILE}")
-            return
-
-        except Exception as error:
-            reason = str(error)
-            print(f"Failed: {reason}")
-
-            attempts.append(
-                {
-                    "date": forecast_date.isoformat(),
-                    "result": "error",
-                    "reason": reason,
-                }
-            )
-
-    attempt_report = "\n".join(
-        f"- {item['date']}: {item['result']} | {item['reason']}"
-        for item in attempts
-    )
-
-    raise RuntimeError(
-        "No valid FWI grid was received from the EFFIS forecast WMS. "
-        "Existing output files were not replaced.\n"
-        f"{attempt_report}"
-    )
+    except Exception as exc:
+        print()
+        print("=" * 70, file=sys.stderr)
+        print("خطا در اعتبارسنجی دادهٔ FWI", file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as error:
-        print("\nFWI update failed.", file=sys.stderr)
-        print(str(error), file=sys.stderr)
-        sys.exit(1)
+    sys.exit(main())
