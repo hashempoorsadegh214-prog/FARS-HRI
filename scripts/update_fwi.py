@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-FARS-HRI | Download and validate gridded FWI for Fars Province
+FARS-HRI | Download validated gridded Fire Weather Index for Fars Province
 
 Source:
-    Copernicus GWIS / EFFIS WMS
+    Copernicus EFFIS / GWIS
     Meteorological model: Meteo-France
     Layer: mf010.fwi
+    Service: EFFIS forecast WMS
 
-Outputs created only after validation:
+Outputs, only when a valid non-zero raster is received:
     data/fwi/fwi_fars.tif
     data/fwi/fwi_fars_metadata.json
 
-Important:
-    The script tries available forecast dates automatically.
-    It refuses to overwrite the valid output with an all-zero or invalid TIFF.
+Optional:
+    Set FWI_DATE to request a specific forecast date.
+
+Example:
+    FWI_DATE=2026-08-27 python scripts/update_fwi.py
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from rasterio.mask import mask
 
 
 # ---------------------------------------------------------------------
-# Project paths
+# Project files
 # ---------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,81 +48,100 @@ OUTPUT_DIRECTORY = PROJECT_ROOT / "data" / "fwi"
 OUTPUT_RASTER_FILE = OUTPUT_DIRECTORY / "fwi_fars.tif"
 OUTPUT_METADATA_FILE = OUTPUT_DIRECTORY / "fwi_fars_metadata.json"
 
+
 # ---------------------------------------------------------------------
-# Official EFFIS WMS configuration
+# Copernicus EFFIS / GWIS forecast WMS settings
 # ---------------------------------------------------------------------
 
-WMS_URL = "https://maps.effis.emergency.copernicus.eu/effis"
+# Important: "effist" is the forecast endpoint.
+WMS_URL = "https://maps.effis.emergency.copernicus.eu/effist"
+
 WMS_VERSION = "1.3.0"
 WMS_LAYER = "mf010.fwi"
 
-# CRS:84 is longitude, latitude and avoids WMS 1.3 axis-order ambiguity.
+# CRS:84 keeps BBOX axis order fixed as longitude, latitude.
 WMS_CRS = "CRS:84"
-WMS_IMAGE_FORMAT = "image/tiff"
+WMS_FORMAT = "image/tiff"
 
 HTTP_TIMEOUT_SECONDS = 120
 
-# The native FWI grid is approximately 10 km.
-# These dimensions are suitable for the Fars bounding box.
-TARGET_WIDTH_PIXELS = 180
-TARGET_HEIGHT_PIXELS = 150
+# Native layer resolution is approximately 10 km.
+# These dimensions are appropriate for the Fars extent.
+REQUEST_WIDTH = 180
+REQUEST_HEIGHT = 150
 
-# Add a small margin before clipping exactly to the Fars boundary.
-BOUNDING_BOX_BUFFER_DEGREES = 0.08
+# Small geographic margin before clipping exactly to the province boundary.
+BBOX_BUFFER_DEGREES = 0.08
 
-# A correct FWI raster must contain at least one value above this threshold.
-# FWI = 0 everywhere indicates an empty/unusable WMS response.
-MINIMUM_VALID_FWI_VALUE = 0.01
+# Reject empty and all-zero TIFF responses.
+MINIMUM_VALID_FWI = 0.01
 
 
 # ---------------------------------------------------------------------
-# General functions
+# Utility functions
 # ---------------------------------------------------------------------
 
-def save_json(file_path: Path, data: dict[str, Any]) -> None:
-    """Write formatted JSON using UTF-8."""
+def save_json(file_path: Path, content: dict[str, Any]) -> None:
+    """Save formatted UTF-8 JSON."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     with file_path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
+        json.dump(content, file, ensure_ascii=False, indent=2)
         file.write("\n")
 
 
-def get_requested_date() -> date | None:
-    """
-    Read an optional exact date from FWI_DATE.
+def read_fars_boundary() -> gpd.GeoDataFrame:
+    """Read Fars Province boundary and ensure EPSG:4326 coordinates."""
+    if not FARS_BOUNDARY_FILE.exists():
+        raise FileNotFoundError(
+            f"Boundary file not found: {FARS_BOUNDARY_FILE}"
+        )
 
-    Example:
-        FWI_DATE=2026-08-27 python scripts/update_fwi.py
+    boundary = gpd.read_file(FARS_BOUNDARY_FILE)
 
-    If FWI_DATE is not set, automatic date selection is used.
-    """
-    value = os.getenv("FWI_DATE", "").strip()
+    if boundary.empty:
+        raise ValueError("fars.geojson contains no geographic features.")
 
-    if not value:
-        return None
+    if boundary.crs is None:
+        boundary = boundary.set_crs("EPSG:4326")
+    else:
+        boundary = boundary.to_crs("EPSG:4326")
 
-    try:
-        return date.fromisoformat(value)
-    except ValueError as error:
-        raise ValueError(
-            "FWI_DATE must have this format: YYYY-MM-DD. "
-            f"Received: {value!r}"
-        ) from error
+    return boundary
+
+
+def get_fars_bbox(
+    boundary: gpd.GeoDataFrame,
+) -> tuple[float, float, float, float]:
+    """Return buffered BBOX as min_lon, min_lat, max_lon, max_lat."""
+    min_lon, min_lat, max_lon, max_lat = boundary.total_bounds
+
+    return (
+        float(min_lon - BBOX_BUFFER_DEGREES),
+        float(min_lat - BBOX_BUFFER_DEGREES),
+        float(max_lon + BBOX_BUFFER_DEGREES),
+        float(max_lat + BBOX_BUFFER_DEGREES),
+    )
 
 
 def get_candidate_dates() -> list[date]:
     """
-    Build dates to try.
+    Return forecast dates to try.
 
-    EFFIS FWI provides a forecast horizon of up to about 3 days.
-    We try yesterday, today and the next three dates. This makes the
-    workflow resilient when the server updates at a different UTC hour.
+    If FWI_DATE is defined, only that exact date is used.
+    Otherwise, try yesterday through three days ahead. This covers the
+    normal EFFIS forecast window and publication-time differences.
     """
-    manually_requested_date = get_requested_date()
+    requested_date = os.getenv("FWI_DATE", "").strip()
 
-    if manually_requested_date is not None:
-        return [manually_requested_date]
+    if requested_date:
+        try:
+            return [date.fromisoformat(requested_date)]
+        except ValueError as error:
+            raise ValueError(
+                "FWI_DATE must use YYYY-MM-DD format. "
+                f"Received: {requested_date!r}"
+            ) from error
 
     today = date.today()
 
@@ -132,49 +154,15 @@ def get_candidate_dates() -> list[date]:
     ]
 
 
-def read_fars_boundary() -> gpd.GeoDataFrame:
-    """Load the Fars polygon in longitude/latitude coordinates."""
-    if not FARS_BOUNDARY_FILE.exists():
-        raise FileNotFoundError(
-            f"Boundary file not found: {FARS_BOUNDARY_FILE}"
-        )
-
-    boundary = gpd.read_file(FARS_BOUNDARY_FILE)
-
-    if boundary.empty:
-        raise ValueError("fars.geojson has no geographic features.")
-
-    if boundary.crs is None:
-        boundary = boundary.set_crs("EPSG:4326")
-    else:
-        boundary = boundary.to_crs("EPSG:4326")
-
-    return boundary
-
-
-def get_request_bbox(
-    boundary: gpd.GeoDataFrame,
-) -> tuple[float, float, float, float]:
-    """Return buffered BBOX as min_lon, min_lat, max_lon, max_lat."""
-    min_lon, min_lat, max_lon, max_lat = boundary.total_bounds
-
-    return (
-        float(min_lon - BOUNDING_BOX_BUFFER_DEGREES),
-        float(min_lat - BOUNDING_BOX_BUFFER_DEGREES),
-        float(max_lon + BOUNDING_BOX_BUFFER_DEGREES),
-        float(max_lat + BOUNDING_BOX_BUFFER_DEGREES),
-    )
-
-
 # ---------------------------------------------------------------------
-# WMS request and validation
+# Download and validation
 # ---------------------------------------------------------------------
 
 def request_fwi_tiff(
     bbox: tuple[float, float, float, float],
     forecast_date: date,
 ) -> bytes:
-    """Request one FWI GeoTIFF from the EFFIS WMS."""
+    """Download one FWI GeoTIFF request from the EFFIS forecast WMS."""
     min_lon, min_lat, max_lon, max_lat = bbox
 
     parameters = {
@@ -185,9 +173,9 @@ def request_fwi_tiff(
         "STYLES": "",
         "CRS": WMS_CRS,
         "BBOX": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-        "WIDTH": TARGET_WIDTH_PIXELS,
-        "HEIGHT": TARGET_HEIGHT_PIXELS,
-        "FORMAT": WMS_IMAGE_FORMAT,
+        "WIDTH": REQUEST_WIDTH,
+        "HEIGHT": REQUEST_HEIGHT,
+        "FORMAT": WMS_FORMAT,
         "TRANSPARENT": "FALSE",
         "TIME": forecast_date.isoformat(),
     }
@@ -199,36 +187,43 @@ def request_fwi_tiff(
     )
 
     content_type = response.headers.get("Content-Type", "").lower()
+    response_start = response.content.lstrip()[:100].lower()
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"HTTP {response.status_code}: {response.text[:800]}"
+            f"WMS request returned HTTP {response.status_code}: "
+            f"{response.text[:1000]}"
         )
 
-    # WMS errors sometimes have HTTP 200 but are XML/text responses.
+    # WMS errors can return HTTP 200 together with XML or plain text.
     if (
         "xml" in content_type
         or "text" in content_type
-        or response.content.lstrip().startswith(b"<?xml")
+        or response_start.startswith(b"<?xml")
+        or response_start.startswith(b"<serviceexception")
     ):
         raise RuntimeError(
-            "WMS returned a service message instead of GeoTIFF: "
-            f"{response.text[:1000]}"
+            "WMS returned a service message instead of a GeoTIFF: "
+            f"{response.text[:1500]}"
         )
 
     if len(response.content) < 500:
         raise RuntimeError(
-            "WMS response is unexpectedly small and is not a valid map TIFF."
+            "WMS response is too small to be a valid GeoTIFF."
         )
 
     return response.content
 
 
-def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
+def inspect_downloaded_tiff(raster_bytes: bytes) -> dict[str, Any]:
     """
-    Inspect TIFF values before saving.
+    Validate the downloaded TIFF before it can overwrite the current output.
 
-    Returns statistics and valid=False for all-zero, empty or nonnumeric data.
+    A valid grid must be:
+    - exactly one numeric band;
+    - non-empty;
+    - not entirely zero;
+    - spatially variable (more than one unique value).
     """
     with MemoryFile(raster_bytes) as memory_file:
         with memory_file.open() as dataset:
@@ -236,14 +231,19 @@ def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
                 return {
                     "valid": False,
                     "reason": (
-                        f"Expected one FWI band, but received {dataset.count} bands."
+                        "Expected one numeric FWI band, "
+                        f"but received {dataset.count} bands."
                     ),
                 }
 
-            if not np.issubdtype(np.dtype(dataset.dtypes[0]), np.number):
+            data_type = np.dtype(dataset.dtypes[0])
+
+            if not np.issubdtype(data_type, np.number):
                 return {
                     "valid": False,
-                    "reason": f"FWI band is not numeric: {dataset.dtypes[0]}",
+                    "reason": (
+                        f"FWI raster band is not numeric: {dataset.dtypes[0]}"
+                    ),
                 }
 
             values = dataset.read(1, masked=True)
@@ -252,7 +252,7 @@ def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
             if valid_values.size == 0:
                 return {
                     "valid": False,
-                    "reason": "The TIFF contains no valid pixels.",
+                    "reason": "Downloaded TIFF contains no valid pixels.",
                 }
 
             minimum = float(np.min(valid_values))
@@ -260,13 +260,12 @@ def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
             mean = float(np.mean(valid_values))
             unique_count = int(np.unique(valid_values).size)
 
-            # FWI must not be uniformly zero.
-            if maximum <= MINIMUM_VALID_FWI_VALUE:
+            if maximum <= MINIMUM_VALID_FWI:
                 return {
                     "valid": False,
                     "reason": (
-                        "The TIFF contains only zero or near-zero values. "
-                        "It is not usable as a gridded FWI input."
+                        "Downloaded TIFF contains only zero or near-zero "
+                        "values, so it is not a usable FWI grid."
                     ),
                     "minimum": minimum,
                     "maximum": maximum,
@@ -274,13 +273,12 @@ def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
                     "unique_value_count": unique_count,
                 }
 
-            # A completely uniform raster cannot represent a useful FWI grid.
             if unique_count <= 1:
                 return {
                     "valid": False,
                     "reason": (
-                        "The TIFF has only one unique value and is not a "
-                        "usable spatial FWI grid."
+                        "Downloaded TIFF has only one unique value and is "
+                        "not a usable spatial FWI grid."
                     ),
                     "minimum": minimum,
                     "maximum": maximum,
@@ -290,12 +288,12 @@ def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
 
             return {
                 "valid": True,
-                "reason": "Numeric FWI raster contains non-zero spatial values.",
+                "reason": "Non-zero, spatially variable numeric FWI grid received.",
                 "crs": str(dataset.crs),
-                "width_pixels": int(dataset.width),
-                "height_pixels": int(dataset.height),
                 "band_count": int(dataset.count),
                 "dtype": dataset.dtypes[0],
+                "width_pixels": int(dataset.width),
+                "height_pixels": int(dataset.height),
                 "nodata_value": dataset.nodata,
                 "minimum": minimum,
                 "maximum": maximum,
@@ -305,30 +303,32 @@ def inspect_raster_bytes(raster_bytes: bytes) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------
-# Clip and write output
+# Clip and write final output
 # ---------------------------------------------------------------------
 
-def clip_and_save(
+def clip_and_save_fwi(
     raster_bytes: bytes,
     boundary: gpd.GeoDataFrame,
 ) -> dict[str, Any]:
     """
-    Clip valid FWI raster to Fars Province and save the final GeoTIFF.
+    Clip the validated WMS GeoTIFF to Fars and write the final raster.
 
-    This runs only after the downloaded TIFF has passed numeric validation.
+    The old output is replaced only after successful validation and writing.
     """
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
     with MemoryFile(raster_bytes) as memory_file:
         with memory_file.open() as source:
             if source.crs is None:
-                raise RuntimeError("Downloaded WMS TIFF has no CRS.")
+                raise RuntimeError(
+                    "Downloaded GeoTIFF has no CRS and cannot be clipped safely."
+                )
 
-            boundary_for_raster = boundary.to_crs(source.crs)
+            boundary_in_raster_crs = boundary.to_crs(source.crs)
 
             clipped_data, clipped_transform = mask(
                 source,
-                boundary_for_raster.geometry,
+                boundary_in_raster_crs.geometry,
                 crop=True,
                 filled=True,
                 nodata=source.nodata,
@@ -342,14 +342,25 @@ def clip_and_save(
                 ]
 
             if clipped_values.size == 0:
-                raise RuntimeError("No valid FWI pixels remain after clipping.")
-
-            clipped_maximum = float(np.max(clipped_values))
-
-            if clipped_maximum <= MINIMUM_VALID_FWI_VALUE:
                 raise RuntimeError(
-                    "After clipping to Fars, the raster has only zero values. "
-                    "The output was not saved."
+                    "No valid FWI pixels remain after clipping to Fars."
+                )
+
+            clipped_minimum = float(np.min(clipped_values))
+            clipped_maximum = float(np.max(clipped_values))
+            clipped_mean = float(np.mean(clipped_values))
+            clipped_unique_count = int(np.unique(clipped_values).size)
+
+            if clipped_maximum <= MINIMUM_VALID_FWI:
+                raise RuntimeError(
+                    "All FWI values are zero after clipping to Fars. "
+                    "The old output was preserved."
+                )
+
+            if clipped_unique_count <= 1:
+                raise RuntimeError(
+                    "FWI raster is uniform after clipping to Fars. "
+                    "The old output was preserved."
                 )
 
             profile = source.profile.copy()
@@ -362,54 +373,49 @@ def clip_and_save(
                 tiled=False,
             )
 
-            temporary_output = OUTPUT_RASTER_FILE.with_suffix(".tmp.tif")
+            temporary_file = OUTPUT_RASTER_FILE.with_suffix(".temporary.tif")
 
-            with rasterio.open(
-                temporary_output,
-                "w",
-                **profile,
-            ) as destination:
-                destination.write(clipped_data)
+            with rasterio.open(temporary_file, "w", **profile) as output:
+                output.write(clipped_data)
 
-            # Replace the old file only after a complete successful write.
-            temporary_output.replace(OUTPUT_RASTER_FILE)
+            temporary_file.replace(OUTPUT_RASTER_FILE)
 
             return {
                 "source_crs": str(source.crs),
+                "band_count": int(clipped_data.shape[0]),
                 "width_pixels": int(clipped_data.shape[2]),
                 "height_pixels": int(clipped_data.shape[1]),
-                "band_count": int(clipped_data.shape[0]),
                 "nodata_value": source.nodata,
-                "minimum_after_clip": float(np.min(clipped_values)),
-                "maximum_after_clip": float(np.max(clipped_values)),
-                "mean_after_clip": float(np.mean(clipped_values)),
-                "unique_value_count_after_clip": int(
-                    np.unique(clipped_values).size
-                ),
+                "minimum_after_clip": clipped_minimum,
+                "maximum_after_clip": clipped_maximum,
+                "mean_after_clip": clipped_mean,
+                "unique_value_count_after_clip": clipped_unique_count,
             }
 
 
 # ---------------------------------------------------------------------
-# Main
+# Main execution
 # ---------------------------------------------------------------------
 
 def main() -> None:
-    """Try forecast dates, validate FWI data, clip and save the first valid grid."""
-    boundary = read_fars_boundary()
-    bbox = get_request_bbox(boundary)
+    """Download a valid FWI grid and save it for the FARS-HRI pipeline."""
+    fars_boundary = read_fars_boundary()
+    bbox = get_fars_bbox(fars_boundary)
     candidate_dates = get_candidate_dates()
 
-    print("Starting EFFIS gridded FWI update...")
+    print("Starting FARS-HRI gridded FWI update...")
+    print(f"Source endpoint: {WMS_URL}")
     print(f"Layer: {WMS_LAYER}")
     print(
         "Fars request BBOX: "
-        f"{bbox[0]:.6f}, {bbox[1]:.6f}, {bbox[2]:.6f}, {bbox[3]:.6f}"
+        f"{bbox[0]:.6f}, {bbox[1]:.6f}, "
+        f"{bbox[2]:.6f}, {bbox[3]:.6f}"
     )
 
-    attempt_log: list[dict[str, str]] = []
+    attempts: list[dict[str, str]] = []
 
     for forecast_date in candidate_dates:
-        print(f"\nTrying forecast date: {forecast_date.isoformat()}")
+        print(f"\nTrying FWI date: {forecast_date.isoformat()}")
 
         try:
             raster_bytes = request_fwi_tiff(
@@ -417,13 +423,13 @@ def main() -> None:
                 forecast_date=forecast_date,
             )
 
-            inspection = inspect_raster_bytes(raster_bytes)
+            validation = inspect_downloaded_tiff(raster_bytes)
 
-            if not inspection["valid"]:
-                reason = str(inspection["reason"])
+            if not validation["valid"]:
+                reason = str(validation["reason"])
                 print(f"Rejected: {reason}")
 
-                attempt_log.append(
+                attempts.append(
                     {
                         "date": forecast_date.isoformat(),
                         "result": "rejected",
@@ -432,9 +438,9 @@ def main() -> None:
                 )
                 continue
 
-            clipping_information = clip_and_save(
+            clipped_information = clip_and_save_fwi(
                 raster_bytes=raster_bytes,
-                boundary=boundary,
+                boundary=fars_boundary,
             )
 
             metadata = {
@@ -442,20 +448,20 @@ def main() -> None:
                 "updated_at_utc": datetime.now(timezone.utc)
                 .replace(microsecond=0)
                 .isoformat(),
-                "source": "Copernicus GWIS / EFFIS",
+                "meteorological_source": "Copernicus EFFIS / GWIS",
                 "meteorological_model": "Meteo-France",
-                "service": "WMS",
-                "wms_url": WMS_URL,
+                "variable": "Fire Weather Index (FWI)",
+                "service": "EFFIS forecast WMS",
+                "endpoint": WMS_URL,
                 "wms_version": WMS_VERSION,
                 "layer": WMS_LAYER,
-                "variable": "Fire Weather Index (FWI)",
-                "approximate_native_resolution": "~10 km",
                 "selected_forecast_date": forecast_date.isoformat(),
-                "output_file": str(
-                    OUTPUT_RASTER_FILE.relative_to(PROJECT_ROOT)
-                ),
+                "approximate_native_resolution": "~10 km",
                 "boundary_file": str(
                     FARS_BOUNDARY_FILE.relative_to(PROJECT_ROOT)
+                ),
+                "output_file": str(
+                    OUTPUT_RASTER_FILE.relative_to(PROJECT_ROOT)
                 ),
                 "wms_request": {
                     "crs": WMS_CRS,
@@ -465,17 +471,17 @@ def main() -> None:
                         "max_longitude": bbox[2],
                         "max_latitude": bbox[3],
                     },
-                    "width_pixels": TARGET_WIDTH_PIXELS,
-                    "height_pixels": TARGET_HEIGHT_PIXELS,
+                    "width_pixels": REQUEST_WIDTH,
+                    "height_pixels": REQUEST_HEIGHT,
                 },
-                "download_validation": inspection,
-                "clipped_raster_information": clipping_information,
-                "attempt_log": attempt_log
+                "download_validation": validation,
+                "clipped_raster_information": clipped_information,
+                "attempts": attempts
                 + [
                     {
                         "date": forecast_date.isoformat(),
                         "result": "accepted",
-                        "reason": str(inspection["reason"]),
+                        "reason": str(validation["reason"]),
                     }
                 ],
             }
@@ -483,17 +489,16 @@ def main() -> None:
             save_json(OUTPUT_METADATA_FILE, metadata)
 
             print("\nSuccess: valid FWI grid saved.")
-            print(f"Date: {forecast_date.isoformat()}")
+            print(f"Selected date: {forecast_date.isoformat()}")
             print(f"Raster: {OUTPUT_RASTER_FILE}")
             print(f"Metadata: {OUTPUT_METADATA_FILE}")
             return
 
         except Exception as error:
             reason = str(error)
-
             print(f"Failed: {reason}")
 
-            attempt_log.append(
+            attempts.append(
                 {
                     "date": forecast_date.isoformat(),
                     "result": "error",
@@ -501,15 +506,15 @@ def main() -> None:
                 }
             )
 
-    error_summary = "\n".join(
-        f"- {item['date']}: {item['result']} — {item['reason']}"
-        for item in attempt_log
+    attempt_report = "\n".join(
+        f"- {item['date']}: {item['result']} | {item['reason']}"
+        for item in attempts
     )
 
     raise RuntimeError(
-        "No valid non-zero FWI grid was returned by EFFIS for the tested "
-        "forecast dates. The previous output was not replaced.\n"
-        f"{error_summary}"
+        "No valid FWI grid was received from the EFFIS forecast WMS. "
+        "Existing output files were not replaced.\n"
+        f"{attempt_report}"
     )
 
 
