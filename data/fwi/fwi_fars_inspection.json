@@ -1,0 +1,31 @@
+{
+  "project": "FARS-HRI",
+  "inspected_at_utc": "2026-08-25T21:33:37+00:00",
+  "input_file": "data/fwi/fwi_fars.tif",
+  "driver": "GTiff",
+  "crs": "EPSG:4326",
+  "width_pixels": 176,
+  "height_pixels": 146,
+  "band_count": 1,
+  "dtypes": [
+    "float32"
+  ],
+  "nodata_value": null,
+  "color_interpretations": [
+    "gray"
+  ],
+  "bands": [
+    {
+      "band": 1,
+      "valid_pixel_count": 25696,
+      "minimum": 0.0,
+      "maximum": 0.0,
+      "mean": 0.0,
+      "unique_value_count": 1,
+      "first_unique_values": [
+        0.0
+      ]
+    }
+  ],
+  "assessment": "Single numeric band detected. Values still need to be checked against the official EFFIS legend before using them as direct FWI values."
+}
