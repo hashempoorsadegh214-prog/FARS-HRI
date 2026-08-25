@@ -1,4 +1,4 @@
-```yaml
+
 name: Create F_Topo
 
 on:
@@ -162,4 +162,3 @@ jobs:
           name: fars-ftopo
           path: data/topography/fars_ftopo.tif
           retention-days: 7
-```
