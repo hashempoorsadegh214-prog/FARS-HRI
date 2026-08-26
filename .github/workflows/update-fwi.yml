@@ -64,10 +64,13 @@ jobs:
           echo "FWI raster:"
           ls -lh data/fwi/fwi_fars.tif
 
-      - name: Commit updated FWI data
+      - name: Sync with latest main and commit FWI data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin main
+          git rebase origin/main
 
           git add data/fwi/fwi_fars_grid.json
           git add data/fwi/fwi_fars.tif
@@ -78,4 +81,21 @@ jobs:
           fi
 
           git commit -m "Update gridded FWI for Fars"
-          git push origin HEAD:main
+
+      - name: Push updated FWI data
+        run: |
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "FWI data pushed successfully. ✅"
+              exit 0
+            fi
+
+            echo "Push attempt ${attempt} failed; synchronizing with main and retrying..."
+
+            git fetch origin main
+            git rebase origin/main
+            sleep 5
+          done
+
+          echo "Unable to push FWI data after 3 attempts."
+          exit 1
