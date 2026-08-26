@@ -1,4 +1,4 @@
-name: Update FWI and Build Raster
+name: Update FWI, Build Raster and HRI
 
 on:
   workflow_dispatch:
@@ -10,7 +10,11 @@ on:
     paths:
       - "scripts/update_fwi.py"
       - "scripts/build_fwi_raster.py"
+      - "scripts/build_hri.py"
       - "requirements.txt"
+      - "data/fuel/fars_fuel.tif"
+      - "data/fuel/Global_fuelbeds_parameters_v1.2.xlsx"
+      - "data/topography/dem_fars.tif"
       - ".github/workflows/update-fwi.yml"
 
 permissions:
@@ -53,42 +57,53 @@ jobs:
         run: |
           test -f scripts/update_fwi.py
           test -f scripts/build_fwi_raster.py
+          test -f scripts/build_hri.py
           test -f data/fuel/fars_fuel.tif
+          test -f data/fuel/Global_fuelbeds_parameters_v1.2.xlsx
+          test -f data/topography/dem_fars.tif
           test -f requirements.txt
 
-      - name: Download FWI data and build raster
+          echo "All required project files are present. ✅"
+
+      - name: Download FWI data, build FWI raster and HRI
         run: |
           python scripts/update_fwi.py
           python scripts/build_fwi_raster.py
+          python scripts/build_hri.py
 
-      - name: Check generated FWI files
+      - name: Check generated FWI and HRI files
         run: |
           test -f data/fwi/fwi_fars_grid.json
           test -f data/fwi/fwi_fars.tif
+          test -f data/output/fars_hri.tif
 
-          echo "FWI JSON:"
+          echo "========== FWI JSON =========="
           ls -lh data/fwi/fwi_fars_grid.json
 
-          echo "FWI raster:"
+          echo "========== FWI Raster =========="
           ls -lh data/fwi/fwi_fars.tif
 
-      - name: Commit updated FWI data
+          echo "========== Final HRI Raster =========="
+          ls -lh data/output/fars_hri.tif
+
+      - name: Commit updated FWI and HRI data
         run: |
           git add data/fwi/fwi_fars_grid.json
           git add data/fwi/fwi_fars.tif
+          git add data/output/fars_hri.tif
 
           if git diff --cached --quiet; then
-            echo "No FWI data changes to commit."
+            echo "No FWI or HRI data changes to commit."
             exit 0
           fi
 
-          git commit -m "Update gridded FWI for Fars"
+          git commit -m "Update FWI and HRI for Fars"
 
-      - name: Push updated FWI data
+      - name: Push updated FWI and HRI data
         run: |
           for attempt in 1 2 3; do
             if git push origin HEAD:main; then
-              echo "FWI data pushed successfully. ✅"
+              echo "FWI and HRI data pushed successfully. ✅"
               exit 0
             fi
 
@@ -99,5 +114,5 @@ jobs:
             sleep 5
           done
 
-          echo "Unable to push FWI data after 3 attempts."
+          echo "Unable to push FWI and HRI data after 3 attempts."
           exit 1
