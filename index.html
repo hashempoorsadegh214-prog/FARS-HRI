@@ -3,14 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
   <title>سامانه پیش‌بینی وقوع حریق‌های احتمالی در عرصه‌های طبیعی استان فارس</title>
 
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha512-p4NxAoJBhIINfQWQ6/7F5CPCDqlyy+fXc6K/yH4FZHYVG7O4M0VbT6J2tvkI7+3p3zKqJ3+PZz8iQ5Y9T5y6wA=="
-    crossorigin=""
   />
 
   <style>
@@ -21,26 +18,16 @@
     }
 
     :root {
-      --red-950: #4d0910;
-      --red-900: #70111b;
-      --red-800: #921d2a;
-      --red-700: #b92938;
-      --red-100: #ffe8e9;
-
+      --red-dark: #70111b;
+      --red: #921d2a;
+      --red-light: #b92938;
+      --gold: #d49b42;
       --bg: #f4f6f8;
       --card: #ffffff;
       --text: #20242a;
       --muted: #68707a;
       --border: #dce1e6;
-      --shadow: 0 8px 25px rgba(27, 34, 42, 0.10);
-
-      --low: #1f9d55;
-      --moderate: #e5b500;
-      --high: #f57c00;
-      --very-high: #e53935;
-      --extreme: #8e2357;
-      --very-extreme: #3c0a12;
-
+      --shadow: 0 6px 20px rgba(27, 34, 42, 0.10);
       --map-filter: none;
     }
 
@@ -50,12 +37,16 @@
       --text: #f2f4f7;
       --muted: #b2bbc7;
       --border: #39424d;
-      --shadow: 0 8px 25px rgba(0, 0, 0, 0.30);
-      --map-filter: brightness(0.72) saturate(0.75);
+      --shadow: 0 6px 20px rgba(0, 0, 0, 0.30);
+      --map-filter: brightness(0.72) saturate(0.78);
     }
 
     * {
       box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
     }
 
     body {
@@ -65,55 +56,48 @@
       color: var(--text);
       font-family: "BNazanin", Tahoma, Arial, sans-serif;
       font-size: 18px;
-      transition: background 0.25s ease, color 0.25s ease;
+      transition: background 0.2s ease, color 0.2s ease;
     }
 
     button,
     select {
-      font-family: inherit;
-      font-size: inherit;
+      font: inherit;
     }
 
     .site-header {
       color: #fff;
-      background:
-        linear-gradient(135deg, rgba(65, 5, 11, 0.94), rgba(159, 24, 38, 0.94)),
-        radial-gradient(circle at top right, rgba(255, 255, 255, 0.15), transparent 42%);
-      border-bottom: 4px solid #d49b42;
-      box-shadow: 0 4px 16px rgba(48, 6, 11, 0.30);
+      background: linear-gradient(135deg, #4d0910, #a31b2b);
+      border-bottom: 4px solid var(--gold);
+      box-shadow: 0 4px 14px rgba(48, 6, 11, 0.28);
     }
 
     .header-inner {
-      width: min(1440px, calc(100% - 32px));
-      min-height: 148px;
-      margin: 0 auto;
+      width: min(1400px, calc(100% - 32px));
+      min-height: 145px;
+      margin: auto;
+      padding: 22px 120px;
       position: relative;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 22px 120px;
-    }
-
-    .header-title {
       text-align: center;
     }
 
-    .header-title h1 {
+    h1 {
       margin: 0;
-      font-size: clamp(25px, 3.1vw, 42px);
-      line-height: 1.35;
-      font-weight: 700;
+      font-size: clamp(25px, 3vw, 40px);
+      line-height: 1.4;
     }
 
     .forecast-date {
       display: inline-block;
       margin-top: 10px;
-      padding: 5px 20px;
-      color: #fff6db;
-      border: 1px solid rgba(255, 236, 183, 0.62);
+      padding: 5px 18px;
+      border: 1px solid rgba(255, 236, 183, 0.65);
       border-radius: 99px;
-      background: rgba(0, 0, 0, 0.17);
-      font-size: clamp(18px, 2vw, 24px);
+      color: #fff6db;
+      background: rgba(0, 0, 0, 0.18);
+      font-size: clamp(18px, 2vw, 23px);
       font-weight: 700;
     }
 
@@ -122,69 +106,64 @@
       left: 0;
       top: 50%;
       transform: translateY(-50%);
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 16px;
+      padding: 8px 15px;
       border: 1px solid rgba(255, 255, 255, 0.60);
-      border-radius: 10px;
-      background: rgba(0, 0, 0, 0.20);
+      border-radius: 9px;
       color: #fff;
+      background: rgba(0, 0, 0, 0.20);
       cursor: pointer;
-      transition: 0.2s ease;
     }
 
-    .theme-button:hover {
-      background: rgba(255, 255, 255, 0.18);
+    .theme-button:hover,
+    .button:hover {
+      filter: brightness(0.90);
     }
 
     .top-nav {
       background: var(--card);
       border-bottom: 1px solid var(--border);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
     }
 
     .top-nav-inner {
-      width: min(1440px, calc(100% - 32px));
-      min-height: 54px;
+      width: min(1400px, calc(100% - 32px));
+      min-height: 52px;
       margin: auto;
+      padding: 7px 0;
       display: flex;
-      align-items: center;
       justify-content: center;
-      gap: 10px;
+      align-items: center;
       flex-wrap: wrap;
-      padding: 8px 0;
+      gap: 7px;
     }
 
     .top-nav a {
-      padding: 4px 14px;
+      padding: 4px 13px;
+      border-radius: 7px;
       color: var(--text);
       text-decoration: none;
-      border-radius: 8px;
-      transition: 0.2s ease;
     }
 
     .top-nav a:hover {
       color: #fff;
-      background: var(--red-800);
+      background: var(--red);
     }
 
     .page {
-      width: min(1440px, calc(100% - 32px));
-      margin: 22px auto 36px;
+      width: min(1400px, calc(100% - 32px));
+      margin: 20px auto 35px;
     }
 
     .status-bar {
+      margin-bottom: 16px;
+      padding: 10px 15px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 10px;
-      margin-bottom: 18px;
-      padding: 10px 16px;
-      color: var(--muted);
       border: 1px solid var(--border);
-      border-right: 5px solid var(--red-800);
+      border-right: 5px solid var(--red);
       border-radius: 10px;
+      color: var(--muted);
       background: var(--card);
     }
 
@@ -200,36 +179,39 @@
 
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 14px;
-      margin-bottom: 18px;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
     }
 
     .stat-card,
     .panel {
-      background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 13px;
+      background: var(--card);
       box-shadow: var(--shadow);
     }
 
     .stat-card {
-      min-height: 118px;
-      padding: 15px 17px;
-      border-top: 4px solid var(--red-800);
+      min-height: 110px;
+      padding: 14px 15px;
+      border-top: 4px solid var(--red);
     }
 
     .stat-card .label {
       color: var(--muted);
-      font-size: 17px;
+      font-size: 16px;
+      line-height: 1.35;
     }
 
     .stat-card .value {
       margin-top: 7px;
-      color: var(--red-900);
+      color: var(--red-dark);
+      direction: ltr;
       font-family: Tahoma, Arial, sans-serif;
-      font-size: 29px;
+      font-size: 27px;
       font-weight: 700;
+      text-align: right;
     }
 
     body.dark-mode .stat-card .value {
@@ -239,19 +221,19 @@
     .stat-card .subvalue {
       margin-top: 2px;
       color: var(--muted);
-      font-size: 15px;
+      font-size: 14px;
     }
 
     .dashboard-grid {
       display: grid;
-      grid-template-columns: 310px minmax(0, 1fr);
-      gap: 18px;
+      grid-template-columns: 305px minmax(0, 1fr);
+      gap: 16px;
     }
 
     .sidebar {
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 16px;
     }
 
     .panel {
@@ -260,33 +242,32 @@
 
     .panel-title {
       margin: 0;
-      padding: 11px 15px;
+      padding: 10px 14px;
       color: #fff;
-      background: linear-gradient(135deg, var(--red-900), var(--red-700));
+      background: linear-gradient(135deg, var(--red-dark), var(--red-light));
       font-size: 22px;
       font-weight: 700;
     }
 
     .panel-body {
-      padding: 15px;
+      padding: 14px;
     }
 
     .filter-group {
-      padding-bottom: 12px;
       margin-bottom: 12px;
+      padding-bottom: 12px;
       border-bottom: 1px solid var(--border);
     }
 
     .filter-group:last-child {
-      padding-bottom: 0;
       margin-bottom: 0;
+      padding-bottom: 0;
       border-bottom: 0;
     }
 
     .filter-group-title {
       display: block;
-      margin-bottom: 8px;
-      color: var(--text);
+      margin-bottom: 7px;
       font-weight: 700;
     }
 
@@ -296,51 +277,55 @@
       gap: 8px;
       margin: 7px 0;
       cursor: pointer;
-      color: var(--text);
     }
 
     .check-row input {
       width: 17px;
       height: 17px;
-      accent-color: var(--red-800);
+      accent-color: var(--red);
     }
 
     select {
       width: 100%;
-      padding: 8px 9px;
-      color: var(--text);
+      padding: 8px;
       border: 1px solid var(--border);
       border-radius: 8px;
       outline: none;
+      color: var(--text);
       background: var(--card);
     }
 
     .button {
       width: 100%;
-      margin-top: 10px;
+      margin-top: 9px;
       padding: 9px 12px;
-      color: #fff;
       border: 0;
       border-radius: 8px;
-      background: var(--red-800);
+      color: #fff;
+      background: var(--red);
       cursor: pointer;
-      transition: 0.2s ease;
     }
 
-    .button:hover {
-      background: var(--red-900);
+    .button.secondary {
+      background: #56616d;
     }
 
-    .map-panel {
-      min-height: 700px;
-      display: flex;
-      flex-direction: column;
+    .button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .map-panel,
+    #map {
+      min-height: 690px;
+    }
+
+    .map-wrapper {
+      position: relative;
     }
 
     #map {
-      min-height: 700px;
       width: 100%;
-      flex: 1;
       background: #dce7ed;
       filter: var(--map-filter);
     }
@@ -349,21 +334,21 @@
       position: absolute;
       z-index: 1000;
       left: 12px;
-      bottom: 26px;
-      width: 206px;
-      padding: 12px;
+      bottom: 25px;
+      width: 202px;
+      padding: 11px;
+      border: 1px solid rgba(0, 0, 0, 0.16);
+      border-radius: 9px;
       color: #222;
-      border: 1px solid rgba(0, 0, 0, 0.17);
-      border-radius: 10px;
       background: rgba(255, 255, 255, 0.94);
-      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
       direction: rtl;
       font-size: 15px;
     }
 
     .legend strong {
       display: block;
-      margin-bottom: 7px;
+      margin-bottom: 6px;
       font-size: 18px;
     }
 
@@ -371,84 +356,93 @@
       display: flex;
       align-items: center;
       gap: 7px;
-      margin: 4px 0;
+      margin: 3px 0;
     }
 
     .legend-color {
       width: 18px;
       height: 13px;
+      border: 1px solid rgba(0, 0, 0, 0.15);
       border-radius: 3px;
-      border: 1px solid rgba(0, 0, 0, 0.16);
-    }
-
-    .map-wrapper {
-      position: relative;
-      flex: 1;
     }
 
     .info-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 18px;
-      margin-top: 18px;
+      gap: 16px;
+      margin-top: 16px;
     }
 
     .info-text {
       line-height: 1.9;
-      color: var(--text);
     }
 
     .info-text p {
-      margin: 0 0 10px;
+      margin: 0 0 9px;
     }
 
     .info-text ul {
-      padding-right: 22px;
       margin: 6px 0;
+      padding-right: 22px;
     }
 
     .archive-list {
-      max-height: 275px;
+      max-height: 270px;
       overflow-y: auto;
     }
 
     .archive-item {
+      width: 100%;
+      padding: 9px;
+      margin-bottom: 7px;
       display: flex;
-      align-items: center;
       justify-content: space-between;
+      align-items: center;
       gap: 8px;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      background: transparent;
+      cursor: pointer;
+      text-align: right;
     }
 
-    .archive-item:last-child {
-      border-bottom: 0;
+    .archive-item:hover,
+    .archive-item.active {
+      color: #fff;
+      border-color: var(--red);
+      background: var(--red);
     }
 
     .archive-date {
       font-family: Tahoma, Arial, sans-serif;
-      font-size: 14px;
-    }
-
-    .archive-count {
-      padding: 2px 9px;
-      color: #fff;
-      border-radius: 99px;
-      background: var(--red-800);
-      font-family: Tahoma, Arial, sans-serif;
       font-size: 13px;
     }
 
+    .archive-tag {
+      padding: 2px 8px;
+      border-radius: 99px;
+      color: #fff;
+      background: var(--red-dark);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .archive-item.active .archive-tag {
+      background: rgba(255, 255, 255, 0.22);
+    }
+
     .empty-message {
+      margin: 0;
       color: var(--muted);
       line-height: 1.8;
     }
 
     .footer {
-      margin-top: 24px;
-      padding: 16px;
-      color: var(--muted);
+      margin-top: 22px;
+      padding: 15px;
       border-top: 1px solid var(--border);
+      color: var(--muted);
       text-align: center;
       font-size: 16px;
     }
@@ -464,20 +458,16 @@
       line-height: 1.7;
     }
 
-    @media (max-width: 1100px) {
+    @media (max-width: 1150px) {
       .stats-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
       }
-
-      .dashboard-grid {
-        grid-template-columns: 280px minmax(0, 1fr);
-      }
     }
 
-    @media (max-width: 820px) {
+    @media (max-width: 850px) {
       .header-inner {
         min-height: 170px;
-        padding: 20px 8px 64px;
+        padding: 20px 10px 66px;
       }
 
       .theme-button {
@@ -487,26 +477,22 @@
         transform: translateX(-50%);
       }
 
-      .stats-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
       .dashboard-grid,
       .info-grid {
         grid-template-columns: 1fr;
       }
 
-      #map,
-      .map-panel {
-        min-height: 520px;
+      .map-panel,
+      #map {
+        min-height: 540px;
       }
     }
 
-    @media (max-width: 460px) {
+    @media (max-width: 500px) {
       .page,
       .header-inner,
       .top-nav-inner {
-        width: min(100% - 20px, 1440px);
+        width: min(100% - 20px, 1400px);
       }
 
       .stats-grid {
@@ -514,13 +500,13 @@
       }
 
       .status-bar {
-        align-items: flex-start;
         flex-direction: column;
+        align-items: flex-start;
       }
 
       .legend {
-        left: 8px;
-        bottom: 12px;
+        left: 7px;
+        bottom: 10px;
         width: 180px;
       }
     }
@@ -530,14 +516,14 @@
 <body>
   <header class="site-header">
     <div class="header-inner">
-      <div class="header-title">
+      <div>
         <h1>سامانه پیش‌بینی وقوع حریق‌های احتمالی در عرصه‌های طبیعی استان فارس</h1>
         <div id="forecastDate" class="forecast-date">
           <strong>پیش‌بینی برای تاریخ روز بعد:</strong> در حال دریافت اطلاعات...
         </div>
       </div>
 
-      <button id="themeToggle" class="theme-button" type="button" aria-label="تغییر حالت روز و شب">
+      <button id="themeToggle" class="theme-button" type="button">
         <span id="themeIcon">☾</span>
         <span id="themeText">حالت شب</span>
       </button>
@@ -548,8 +534,8 @@
     <div class="top-nav-inner">
       <a href="#mapSection">نقشه پیش‌بینی</a>
       <a href="#filters">فیلترها و آمار</a>
-      <a href="#guide">راهنمای نقشه</a>
       <a href="#archive">آرشیو</a>
+      <a href="#guide">راهنما</a>
       <a href="#about">معرفی سامانه</a>
     </div>
   </nav>
@@ -560,36 +546,43 @@
         <span class="status-dot"></span>
         <span id="dataStatus">در حال دریافت داده‌های سامانه...</span>
       </div>
+
       <div id="lastUpdate">آخرین به‌روزرسانی: ---</div>
     </section>
 
     <section class="stats-grid" aria-label="تابلو آمار">
       <article class="stat-card">
-        <div class="label">تعداد نقاط پیش‌بینی انتخاب‌شده</div>
+        <div class="label">نقاط پیش‌بینی انتخاب‌شده</div>
         <div id="statForecastPoints" class="value">---</div>
-        <div class="subvalue">بر پایه فیلتر منطقه و شدت</div>
+        <div class="subvalue">بر پایه فیلترها</div>
       </article>
 
       <article class="stat-card">
-        <div class="label">میانگین شاخص FWI</div>
+        <div class="label">میانگین FWI</div>
         <div id="statAverageFwi" class="value">---</div>
         <div class="subvalue">در محدوده انتخاب‌شده</div>
       </article>
 
       <article class="stat-card">
-        <div class="label">بیشترین شاخص FWI</div>
+        <div class="label">بیشترین FWI</div>
         <div id="statMaximumFwi" class="value">---</div>
         <div class="subvalue">در محدوده انتخاب‌شده</div>
       </article>
 
       <article class="stat-card">
-        <div class="label">پهنه‌های با خطر زیاد و بالاتر</div>
+        <div class="label">خطر زیاد و بالاتر</div>
         <div id="statHighRisk" class="value">---</div>
-        <div class="subvalue">FWI برابر یا بیشتر از 21.3</div>
+        <div class="subvalue">FWI برابر یا بیشتر از ۲۱٫۳</div>
       </article>
 
       <article class="stat-card">
-        <div class="label">کانون‌های حریق ثبت‌شده</div>
+        <div class="label">میانگین HRI</div>
+        <div id="statAverageHri" class="value">---</div>
+        <div class="subvalue">آمار رستر HRI</div>
+      </article>
+
+      <article class="stat-card">
+        <div class="label">کانون حریق ثبت‌شده</div>
         <div id="statFirePoints" class="value">---</div>
         <div class="subvalue">براساس فیلتر روز و شب</div>
       </article>
@@ -631,7 +624,7 @@
             </div>
 
             <div class="filter-group">
-              <label class="filter-group-title" for="areaFilter">فیلتر محدوده برای آمار</label>
+              <label class="filter-group-title" for="areaFilter">محدوده آمار</label>
 
               <select id="areaFilter">
                 <option value="all">کل استان فارس</option>
@@ -659,12 +652,12 @@
 
               <label class="check-row">
                 <input id="showDayFires" type="checkbox" checked />
-                کانون‌های شناسایی‌شده در روز
+                کانون‌های روز
               </label>
 
               <label class="check-row">
                 <input id="showNightFires" type="checkbox" checked />
-                کانون‌های شناسایی‌شده در شب
+                کانون‌های شب
               </label>
             </div>
 
@@ -676,7 +669,9 @@
 
         <section class="panel">
           <h2 class="panel-title">وضعیت داده</h2>
+
           <div class="panel-body info-text">
+            <p><strong>حالت نمایش:</strong> <span id="dataMode">آخرین پیش‌بینی</span></p>
             <p><strong>منبع FWI:</strong> <span id="fwiSource">---</span></p>
             <p><strong>تاریخ تولید:</strong> <span id="generatedAt">---</span></p>
             <p><strong>محدوده:</strong> استان فارس، ایران</p>
@@ -690,37 +685,37 @@
         <div class="map-wrapper">
           <div id="map"></div>
 
-          <div class="legend" aria-label="راهنمای شدت خطر">
+          <div class="legend">
             <strong>راهنمای شاخص FWI</strong>
 
             <div class="legend-row">
               <span class="legend-color" style="background:#1f9d55"></span>
-              <span>کم: کمتر از 11.2</span>
+              <span>کم: کمتر از ۱۱٫۲</span>
             </div>
 
             <div class="legend-row">
               <span class="legend-color" style="background:#e5b500"></span>
-              <span>متوسط: 11.2 تا 21.3</span>
+              <span>متوسط: ۱۱٫۲ تا ۲۱٫۳</span>
             </div>
 
             <div class="legend-row">
               <span class="legend-color" style="background:#f57c00"></span>
-              <span>زیاد: 21.3 تا 38</span>
+              <span>زیاد: ۲۱٫۳ تا ۳۸</span>
             </div>
 
             <div class="legend-row">
               <span class="legend-color" style="background:#e53935"></span>
-              <span>خیلی زیاد: 38 تا 50</span>
+              <span>خیلی زیاد: ۳۸ تا ۵۰</span>
             </div>
 
             <div class="legend-row">
               <span class="legend-color" style="background:#8e2357"></span>
-              <span>شدید: 50 تا 70</span>
+              <span>شدید: ۵۰ تا ۷۰</span>
             </div>
 
             <div class="legend-row">
               <span class="legend-color" style="background:#3c0a12"></span>
-              <span>بسیار شدید: بیش از 70</span>
+              <span>بسیار شدید: بیش از ۷۰</span>
             </div>
           </div>
         </div>
@@ -728,51 +723,46 @@
     </section>
 
     <section class="info-grid">
-      <section id="guide" class="panel">
-        <h2 class="panel-title">راهنمای استفاده از نقشه</h2>
-
-        <div class="panel-body info-text">
-          <p>
-            نقاط رنگی روی نقشه، مقدار پیش‌بینی‌شده شاخص
-            <strong>FWI</strong> برای روز بعد را نمایش می‌دهند.
-          </p>
-
-          <ul>
-            <li>از بخش «فیلتر نقشه و آمار» لایه‌های موردنظر را فعال یا غیرفعال کنید.</li>
-            <li>برای مشاهده جزئیات هر نقطه، روی آن کلیک کنید.</li>
-            <li>فیلتر محدوده، آمار تابلو را برای کل فارس، مناطق حفاظت‌شده یا مناطق شکار ممنوع محاسبه می‌کند.</li>
-            <li>کانون‌های حریق با رنگ زرد برای روز و آبی برای شب نمایش داده می‌شوند.</li>
-            <li>شاخص HRI در فایل رستری خروجی سامانه تولید می‌شود و مبنای تحلیل تلفیقی FWI، سوخت و شیب است.</li>
-          </ul>
-        </div>
-      </section>
-
       <section id="archive" class="panel">
-        <h2 class="panel-title">آرشیو روزهای گذشته</h2>
+        <h2 class="panel-title">آرشیو پیش‌بینی‌ها</h2>
 
         <div class="panel-body">
-          <div id="archiveList" class="archive-list">
+          <p class="info-text">
+            با انتخاب هر تاریخ، نقاط FWI و آمار همان پیش‌بینی روی نقشه نمایش داده می‌شود.
+          </p>
+
+          <button id="loadLatestButton" class="button secondary" type="button">
+            بازگشت به آخرین پیش‌بینی
+          </button>
+
+          <div id="archiveList" class="archive-list" style="margin-top:12px;">
             <p class="empty-message">در حال دریافت فهرست آرشیو...</p>
           </div>
         </div>
       </section>
+
+      <section id="guide" class="panel">
+        <h2 class="panel-title">راهنمای استفاده</h2>
+
+        <div class="panel-body info-text">
+          <ul>
+            <li>روی هر نقطهٔ رنگی نقشه کلیک کن تا مقدار FWI و سطح خطر آن دیده شود.</li>
+            <li>فیلتر محدوده، آمار را برای کل فارس یا مناطق حفاظتی انتخاب‌شده محاسبه می‌کند.</li>
+            <li>دادهٔ آرشیوی، پیش‌بینی ثبت‌شدهٔ همان تاریخ است و به دادهٔ جدید تغییر نمی‌کند.</li>
+            <li>لایهٔ کانون حریق، دادهٔ جاری NASA FIRMS است و آرشیو FWI را پوشش نمی‌دهد.</li>
+            <li>HRI از ترکیب FWI، سوخت و توپوگرافی تولید می‌شود.</li>
+          </ul>
+        </div>
+      </section>
     </section>
 
-    <section id="about" class="panel" style="margin-top:18px;">
+    <section id="about" class="panel" style="margin-top:16px;">
       <h2 class="panel-title">معرفی سامانه</h2>
 
       <div class="panel-body info-text">
         <p>
-          سامانه پیش‌بینی وقوع حریق‌های احتمالی در عرصه‌های طبیعی استان فارس،
-          با هدف کمک به پایش، اولویت‌بندی گشت‌های حفاظتی و تصمیم‌گیری سریع‌تر
-          در مدیریت خطر آتش‌سوزی طراحی شده است.
-        </p>
-
-        <p>
-          نقشه پیش‌بینی روزانه از داده‌های شاخص هواشناسی خطر حریق
-          <strong>FWI</strong> تهیه می‌شود. نقشه تلفیقی خطر
-          <strong>HRI</strong> نیز با ترکیب وزن‌دار FWI، ویژگی‌های سوخت و شیب زمین
-          تولید می‌شود:
+          این سامانه با هدف کمک به پایش، اولویت‌بندی گشت‌های حفاظتی و تصمیم‌گیری سریع‌تر
+          برای مدیریت خطر آتش‌سوزی در عرصه‌های طبیعی استان فارس طراحی شده است.
         </p>
 
         <p style="text-align:center; direction:ltr; font-family:Tahoma,Arial,sans-serif;">
@@ -780,8 +770,7 @@
         </p>
 
         <p>
-          این سامانه ابزار پشتیبان تصمیم‌گیری است و جایگزین ارزیابی میدانی،
-          هشدارهای رسمی یا دستورالعمل‌های مدیریت بحران نیست.
+          سامانه یک ابزار پشتیبان تصمیم‌گیری است و جایگزین ارزیابی میدانی یا هشدارهای رسمی نیست.
         </p>
       </div>
     </section>
@@ -789,37 +778,23 @@
     <footer class="footer">
       سامانه پیش‌بینی وقوع حریق‌های احتمالی در عرصه‌های طبیعی استان فارس
       <br />
-      داده‌های پیش‌بینی: Copernicus EFFIS / ECMWF | داده‌های کانون حریق: NASA FIRMS
+      داده‌های پیش‌بینی: Copernicus EFFIS / ECMWF | کانون‌های حریق: NASA FIRMS
     </footer>
   </main>
 
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha512-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBoC4s39KFMp8Da26n9JfH9s6oCwN6nYctTxdP+W9VqHjA=="
-    crossorigin=""
-  ></script>
-
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
     "use strict";
 
-    const app = {
-      map: null,
-      baseLayers: {},
-      provinceLayer: null,
-      protectedLayer: null,
-      huntingBannedLayer: null,
-      fwiLayer: null,
-      firesLayer: null,
-
-      provinceData: null,
-      protectedData: null,
-      huntingBannedData: null,
-      fwiData: null,
-      firesData: [],
-
-      selectedAreaGeometry: null
+    const PATHS = {
+      province: ["fars.geojson"],
+      protectedAreas: ["protected_areas.geojson"],
+      huntingBanned: ["hunting_banned.geojson"],
+      latestFwi: ["data/fwi/fwi_fars_grid.json", "data/fwi_fars.json"],
+      fires: ["fires.csv"],
+      archiveIndex: ["data/archive_index.json"],
+      updateInfo: ["update-info.json"]
     };
 
     const COLORS = {
@@ -833,54 +808,53 @@
       nightFire: "#2388ff"
     };
 
+    const app = {
+      map: null,
+      canvasRenderer: null,
+      baseLayers: {},
+      provinceLayer: null,
+      protectedLayer: null,
+      huntingBannedLayer: null,
+      fwiLayer: null,
+      firesLayer: null,
+
+      provinceData: null,
+      protectedData: null,
+      huntingBannedData: null,
+      latestFwiData: null,
+      currentFwiData: null,
+      firesData: [],
+      archiveIndex: [],
+      currentArchiveDate: null
+    };
+
     function byId(id) {
       return document.getElementById(id);
     }
 
-    function numberFa(value, digits = 0) {
-      if (!Number.isFinite(value)) return "---";
-
-      return new Intl.NumberFormat("fa-IR", {
-        maximumFractionDigits: digits,
-        minimumFractionDigits: digits
-      }).format(value);
-    }
-
-    function fwiClass(value) {
-      if (value < 11.2) return "low";
-      if (value < 21.3) return "moderate";
-      if (value < 38.0) return "high";
-      if (value < 50.0) return "veryHigh";
-      if (value < 70.0) return "extreme";
-      return "veryExtreme";
-    }
-
-    function fwiLabel(value) {
-      const category = fwiClass(value);
-
-      const labels = {
-        low: "کم",
-        moderate: "متوسط",
-        high: "زیاد",
-        veryHigh: "خیلی زیاد",
-        extreme: "شدید",
-        veryExtreme: "بسیار شدید"
-      };
-
-      return labels[category];
-    }
-
-    function fwiColor(value) {
-      return COLORS[fwiClass(value)];
-    }
-
     function safeText(value, fallback = "---") {
-      if (value === undefined || value === null || value === "") return fallback;
+      if (value === undefined || value === null || value === "") {
+        return fallback;
+      }
+
       return String(value);
     }
 
-    async function fetchJsonWithFallback(paths) {
-      let latestError = null;
+    function numberFa(value, digits = 0) {
+      const number = Number(value);
+
+      if (!Number.isFinite(number)) {
+        return "---";
+      }
+
+      return new Intl.NumberFormat("fa-IR", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+      }).format(number);
+    }
+
+    async function fetchJson(paths) {
+      let lastError = null;
 
       for (const path of paths) {
         try {
@@ -892,15 +866,15 @@
 
           return await response.json();
         } catch (error) {
-          latestError = error;
+          lastError = error;
         }
       }
 
-      throw latestError || new Error("فایل داده در دسترس نیست.");
+      throw lastError || new Error("فایل JSON در دسترس نیست.");
     }
 
-    async function fetchTextWithFallback(paths) {
-      let latestError = null;
+    async function fetchText(paths) {
+      let lastError = null;
 
       for (const path of paths) {
         try {
@@ -912,19 +886,49 @@
 
           return await response.text();
         } catch (error) {
-          latestError = error;
+          lastError = error;
         }
       }
 
-      throw latestError || new Error("فایل متنی در دسترس نیست.");
+      throw lastError || new Error("فایل متنی در دسترس نیست.");
+    }
+
+    function fwiClass(value) {
+      const fwi = Number(value);
+
+      if (fwi < 11.2) return "low";
+      if (fwi < 21.3) return "moderate";
+      if (fwi < 38) return "high";
+      if (fwi < 50) return "veryHigh";
+      if (fwi < 70) return "extreme";
+      return "veryExtreme";
+    }
+
+    function fwiLabel(value) {
+      const labels = {
+        low: "کم",
+        moderate: "متوسط",
+        high: "زیاد",
+        veryHigh: "خیلی زیاد",
+        extreme: "شدید",
+        veryExtreme: "بسیار شدید"
+      };
+
+      return labels[fwiClass(value)];
+    }
+
+    function fwiColor(value) {
+      return COLORS[fwiClass(value)];
     }
 
     function parseCsv(text) {
       const lines = text.trim().split(/\r?\n/);
 
-      if (lines.length < 2) return [];
+      if (lines.length < 2) {
+        return [];
+      }
 
-      const headers = lines[0].split(",").map((item) => item.trim());
+      const headers = lines[0].split(",").map((header) => header.trim());
 
       return lines.slice(1).map((line) => {
         const values = line.split(",");
@@ -937,19 +941,22 @@
         row.latitude = Number(row.latitude);
         row.longitude = Number(row.longitude);
         row.frp = Number(row.frp);
-        row.brightness = Number(row.brightness);
 
         return row;
-      }).filter((row) => Number.isFinite(row.latitude) && Number.isFinite(row.longitude));
+      }).filter((row) => {
+        return Number.isFinite(row.latitude) && Number.isFinite(row.longitude);
+      });
     }
 
     function initMap() {
+      app.canvasRenderer = L.canvas({ padding: 0.5 });
+
       app.map = L.map("map", {
-        zoomControl: true,
-        preferCanvas: true
+        preferCanvas: true,
+        zoomControl: true
       }).setView([29.55, 52.55], 7);
 
-      const osm = L.tileLayer(
+      app.baseLayers.osm = L.tileLayer(
         "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         {
           maxZoom: 18,
@@ -957,7 +964,7 @@
         }
       );
 
-      const dark = L.tileLayer(
+      app.baseLayers.dark = L.tileLayer(
         "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
         {
           maxZoom: 20,
@@ -965,15 +972,13 @@
         }
       );
 
-      app.baseLayers = { osm, dark };
-
-      const theme = localStorage.getItem("farsHriTheme") || "light";
-      applyTheme(theme, false);
+      const savedTheme = localStorage.getItem("farsHriTheme") || "light";
+      applyTheme(savedTheme, false);
 
       L.control.layers(
         {
-          "نقشه روشن": osm,
-          "نقشه تیره": dark
+          "نقشه روشن": app.baseLayers.osm,
+          "نقشه تیره": app.baseLayers.dark
         },
         {},
         {
@@ -985,6 +990,7 @@
 
     function applyTheme(theme, save = true) {
       const isDark = theme === "dark";
+
       document.body.classList.toggle("dark-mode", isDark);
 
       if (save) {
@@ -994,18 +1000,38 @@
       byId("themeIcon").textContent = isDark ? "☀" : "☾";
       byId("themeText").textContent = isDark ? "حالت روز" : "حالت شب";
 
-      if (!app.map) return;
+      if (!app.map) {
+        return;
+      }
 
       if (isDark) {
-        app.map.removeLayer(app.baseLayers.osm);
-        app.baseLayers.dark.addTo(app.map);
+        if (app.map.hasLayer(app.baseLayers.osm)) {
+          app.map.removeLayer(app.baseLayers.osm);
+        }
+
+        if (!app.map.hasLayer(app.baseLayers.dark)) {
+          app.baseLayers.dark.addTo(app.map);
+        }
       } else {
-        app.map.removeLayer(app.baseLayers.dark);
-        app.baseLayers.osm.addTo(app.map);
+        if (app.map.hasLayer(app.baseLayers.dark)) {
+          app.map.removeLayer(app.baseLayers.dark);
+        }
+
+        if (!app.map.hasLayer(app.baseLayers.osm)) {
+          app.baseLayers.osm.addTo(app.map);
+        }
       }
     }
 
-    function geojsonStyle(feature) {
+    function provinceStyle() {
+      return {
+        color: "#ffffff",
+        weight: 3,
+        fillOpacity: 0
+      };
+    }
+
+    function protectedStyle() {
       return {
         color: "#f0cf69",
         weight: 2,
@@ -1014,7 +1040,7 @@
       };
     }
 
-    function huntingStyle(feature) {
+    function huntingBannedStyle() {
       return {
         color: "#7b3e98",
         weight: 2,
@@ -1024,66 +1050,51 @@
       };
     }
 
-    function provinceStyle() {
-      return {
-        color: "#ffffff",
-        weight: 3,
-        fillColor: "transparent",
-        fillOpacity: 0
-      };
-    }
-
-    function getFeatureName(feature) {
-      const properties = feature.properties || {};
+    function featureName(feature) {
+      const props = feature.properties || {};
 
       return (
-        properties.Name ||
-        properties.NAME1 ||
-        properties.name ||
-        properties.shapeName ||
+        props.Name ||
+        props.NAME1 ||
+        props.name ||
+        props.shapeName ||
         "محدوده بدون نام"
       );
     }
 
-    function makeAreaPopup(feature, type) {
-      const properties = feature.properties || {};
-      const name = getFeatureName(feature);
+    function createAreaPopup(feature, type) {
+      const props = feature.properties || {};
+      const typeName = type === "huntingBanned"
+        ? "منطقه شکار ممنوع"
+        : "منطقه حفاظت‌شده";
 
-      let typeLabel = "منطقه حفاظت‌شده";
-
-      if (type === "huntingBanned") {
-        typeLabel = "منطقه شکار ممنوع";
-      }
-
-      const county = properties.shahrestan || properties.County || "";
-      const area = properties.AREA_ha || properties.area || "";
+      const county = props.shahrestan || props.County || "";
+      const area = props.AREA_ha || props.area || "";
 
       return `
-        <div>
-          <strong>${typeLabel}</strong><br />
-          نام: ${safeText(name)}<br />
-          ${county ? `شهرستان: ${safeText(county)}<br />` : ""}
-          ${area ? `مساحت: ${safeText(area)} هکتار` : ""}
-        </div>
+        <strong>${typeName}</strong><br>
+        نام: ${safeText(featureName(feature))}<br>
+        ${county ? `شهرستان: ${safeText(county)}<br>` : ""}
+        ${area ? `مساحت: ${safeText(area)} هکتار` : ""}
       `;
     }
 
-    function loadGeojsonLayers() {
+    function createBoundaryLayers() {
       app.provinceLayer = L.geoJSON(app.provinceData, {
         style: provinceStyle
       }).bindPopup("مرز استان فارس");
 
       app.protectedLayer = L.geoJSON(app.protectedData, {
-        style: geojsonStyle,
-        onEachFeature: (feature, layer) => {
-          layer.bindPopup(makeAreaPopup(feature, "protected"));
+        style: protectedStyle,
+        onEachFeature(feature, layer) {
+          layer.bindPopup(createAreaPopup(feature, "protected"));
         }
       });
 
       app.huntingBannedLayer = L.geoJSON(app.huntingBannedData, {
-        style: huntingStyle,
-        onEachFeature: (feature, layer) => {
-          layer.bindPopup(makeAreaPopup(feature, "huntingBanned"));
+        style: huntingBannedStyle,
+        onEachFeature(feature, layer) {
+          layer.bindPopup(createAreaPopup(feature, "huntingBanned"));
         }
       });
 
@@ -1098,69 +1109,70 @@
       }
     }
 
-    function getSelectedAreaFeatureCollection() {
+    function pointInRing(longitude, latitude, ring) {
+      let inside = false;
+
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0];
+        const yi = ring[i][1];
+        const xj = ring[j][0];
+        const yj = ring[j][1];
+
+        const intersects = (
+          ((yi > latitude) !== (yj > latitude)) &&
+          (
+            longitude <
+            ((xj - xi) * (latitude - yi)) / ((yj - yi) || Number.EPSILON) + xi
+          )
+        );
+
+        if (intersects) {
+          inside = !inside;
+        }
+      }
+
+      return inside;
+    }
+
+    function pointInPolygonCoordinates(longitude, latitude, coordinates) {
+      if (!Array.isArray(coordinates) || !coordinates.length) {
+        return false;
+      }
+
+      if (!pointInRing(longitude, latitude, coordinates[0])) {
+        return false;
+      }
+
+      for (let holeIndex = 1; holeIndex < coordinates.length; holeIndex += 1) {
+        if (pointInRing(longitude, latitude, coordinates[holeIndex])) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    function pointInFeature(longitude, latitude, feature) {
+      if (!feature || !feature.geometry) {
+        return false;
+      }
+
+      const geometry = feature.geometry;
+
+      if (geometry.type === "Polygon") {
+        return pointInPolygonCoordinates(longitude, latitude, geometry.coordinates);
+      }
+
+      if (geometry.type === "MultiPolygon") {
+        return geometry.coordinates.some((polygon) => {
+          return pointInPolygonCoordinates(longitude, latitude, polygon);
+        });
+      }
+
+      return false;
+    }
+
+    function getSelectedAreaData() {
       const filter = byId("areaFilter").value;
 
-      if (filter === "protected") {
-        return app.protectedData;
-      }
-
-      if (filter === "huntingBanned") {
-        return app.huntingBannedData;
-      }
-
-      return app.provinceData;
-    }
-
-    function pointIsInSelectedArea(point) {
-      const areaData = getSelectedAreaFeatureCollection();
-
-      if (!areaData || !areaData.features || areaData.features.length === 0) {
-        return true;
-      }
-
-      try {
-        return areaData.features.some((feature) => {
-          return turf.booleanPointInPolygon(point, feature);
-        });
-      } catch (error) {
-        return true;
-      }
-    }
-
-    function getFilteredFwiPoints() {
-      if (!app.fwiData || !Array.isArray(app.fwiData.points)) return [];
-
-      const riskFilter = byId("riskFilter").value;
-
-      return app.fwiData.points.filter((item) => {
-        const lat = Number(item.lat);
-        const lon = Number(item.lon);
-        const fwi = Number(item.fwi);
-
-        if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(fwi)) {
-          return false;
-        }
-
-        const point = turf.point([lon, lat]);
-
-        if (!pointIsInSelectedArea(point)) {
-          return false;
-        }
-
-        if (riskFilter !== "all" && fwiClass(fwi) !== riskFilter) {
-          return false;
-        }
-
-        return true;
-      });
-    }
-
-    function getFilteredFires() {
-      const showDay = byId("showDayFires").checked;
-      const showNight = byId("showNightFires").checked;
-
-      return app.firesData.filter((item) => {
-        const point = turf.point([item.longitude, item.latitude]);
-
-        if (!pointIsInSelectedArea(
+      if (f
