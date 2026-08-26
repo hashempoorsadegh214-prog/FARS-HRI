@@ -208,7 +208,11 @@ def build_fuel_component(
 
 
 def calculate_slope_degrees(dem: np.ndarray, transform) -> np.ndarray:
-    """محاسبه شیب بر حسب درجه از DEM در EPSG:4326."""
+    """
+    محاسبه شیب بر حسب درجه از DEM در EPSG:4326.
+
+    اندازهٔ پیکسل افقی بر اساس عرض جغرافیایی هر ردیف به متر تبدیل می‌شود.
+    """
     slope = np.full(dem.shape, np.nan, dtype=np.float32)
     valid_mask = np.isfinite(dem)
 
@@ -228,12 +232,17 @@ def calculate_slope_degrees(dem: np.ndarray, transform) -> np.ndarray:
     meters_per_degree_lon = 111_320.0 * np.cos(np.deg2rad(latitudes))
     meters_per_degree_lon = np.maximum(meters_per_degree_lon, 1.0)
 
+    # اندازه پیکسل افقی برای هر ردیف: shape = (rows,)
     pixel_x_meter = meters_per_degree_lon * pixel_lon_degree
+
+    # اندازه پیکسل عمودی در این گرید یک مقدار ثابت است.
     pixel_y_meter = meters_per_degree_lat * pixel_lat_degree
 
     gradient_y_pixel, gradient_x_pixel = np.gradient(dem_filled)
 
-    gradient_x = gradient_x_pixel / pixel_x_meter[np.newaxis, :]
+    # نکتهٔ حیاتی: pixel_x_meter باید ستون باشد: (rows, 1)
+    # تا بر همهٔ ستون‌های همان ردیف اعمال شود.
+    gradient_x = gradient_x_pixel / pixel_x_meter[:, np.newaxis]
     gradient_y = gradient_y_pixel / pixel_y_meter
 
     slope_radian = np.arctan(np.sqrt(gradient_x**2 + gradient_y**2))
@@ -335,7 +344,7 @@ def main() -> None:
             FUEL_WEIGHT=str(FUEL_WEIGHT),
             TOPO_WEIGHT=str(TOPO_WEIGHT),
             FUEL_METHOD="G_Load + W_1hLoad + W_10hLoad + 0.25*L_depth",
-            TOPO_METHOD="Slope degrees derived from dem_fars.tif",
+            TOPO_METHOD="Slope degrees derived from data/topography/dem_fars.tif",
         )
 
     valid_hri = hri[valid_mask]
