@@ -9,7 +9,7 @@ HRI = 100 * (0.45 * FWI_n + 0.35 * Fuel_n + 0.20 * Topo_n)
 - data/fwi/fwi_fars.tif
 - data/fuel/fars_fuel.tif
 - data/fuel/Global_fuelbeds_parameters_v1.2.xlsx
-- data/dem_fars.tif
+- data/topography/dem_fars.tif
 
 خروجی:
 - data/output/fars_hri.tif
@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FWI_FILE = ROOT / "data" / "fwi" / "fwi_fars.tif"
 FUEL_FILE = ROOT / "data" / "fuel" / "fars_fuel.tif"
 FUEL_PARAMETERS_FILE = ROOT / "data" / "fuel" / "Global_fuelbeds_parameters_v1.2.xlsx"
-DEM_FILE = ROOT / "data" / "dem_fars.tif"
+DEM_FILE = ROOT / "data" / "topography" / "dem_fars.tif"
 OUTPUT_FILE = ROOT / "data" / "output" / "fars_hri.tif"
 
 OUTPUT_NODATA = -9999.0
@@ -128,8 +128,7 @@ def get_fuel_scores(excel_file: Path) -> dict[int, float]:
         + بار چوبی ۱۰ ساعته
         + ۰٫۲۵ × عمق لاشبرگ
 
-    تمام مقادیر منفی، شامل -1 و -3، به معنی نبود/نامعتبر بودن
-    پارامتر هستند و به صفر تبدیل می‌شوند.
+    مقدارهای منفی مانند -1 و -3 به صفر تبدیل می‌شوند.
     """
     columns = [
         "JOIN_VALUE",
@@ -196,9 +195,7 @@ def build_fuel_component(
         fuel_raw[fuel_codes == code] = np.float32(score)
 
     if missing_codes:
-        print(
-            "هشدار: این کدهای رستر سوخت در ستون JOIN_VALUE اکسل پیدا نشدند:"
-        )
+        print("هشدار: کدهای سوخت بدون رکورد در JOIN_VALUE:")
         print(sorted(missing_codes))
 
     mapped_mask = np.isfinite(fuel_raw)
@@ -207,17 +204,11 @@ def build_fuel_component(
         raise ValueError("هیچ کد سوختی از رستر با جدول اکسل تطبیق پیدا نکرد.")
 
     print(f"پیکسل‌های دارای امتیاز سوخت: {int(mapped_mask.sum()):,}")
-
     return fuel_raw, mapped_mask
 
 
 def calculate_slope_degrees(dem: np.ndarray, transform) -> np.ndarray:
-    """
-    محاسبه شیب بر حسب درجه از DEM در EPSG:4326.
-
-    تبدیل اندازه پیکسل جغرافیایی به متر، بر اساس عرض جغرافیایی هر ردیف
-    انجام می‌شود.
-    """
+    """محاسبه شیب بر حسب درجه از DEM در EPSG:4326."""
     slope = np.full(dem.shape, np.nan, dtype=np.float32)
     valid_mask = np.isfinite(dem)
 
