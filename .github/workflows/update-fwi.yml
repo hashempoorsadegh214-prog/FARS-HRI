@@ -1,4 +1,4 @@
-name: Update FWI, Build Raster and HRI
+name: Update FWI, Build Raster, HRI and Daily Archive
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ on:
       - "scripts/update_fwi.py"
       - "scripts/build_fwi_raster.py"
       - "scripts/build_hri.py"
+      - "scripts/archive_forecast.py"
       - "requirements.txt"
       - "data/fuel/fars_fuel.tif"
       - "data/fuel/Global_fuelbeds_parameters_v1.2.xlsx"
@@ -58,6 +59,7 @@ jobs:
           test -f scripts/update_fwi.py
           test -f scripts/build_fwi_raster.py
           test -f scripts/build_hri.py
+          test -f scripts/archive_forecast.py
           test -f data/fuel/fars_fuel.tif
           test -f data/fuel/Global_fuelbeds_parameters_v1.2.xlsx
           test -f data/topography/dem_fars.tif
@@ -65,17 +67,24 @@ jobs:
 
           echo "All required project files are present. ✅"
 
-      - name: Download FWI data, build FWI raster and HRI
+      - name: Download FWI data, build FWI raster, HRI and archive
         run: |
           python scripts/update_fwi.py
           python scripts/build_fwi_raster.py
           python scripts/build_hri.py
+          python scripts/archive_forecast.py
 
-      - name: Check generated FWI and HRI files
+      - name: Check generated FWI, HRI and archive files
         run: |
           test -f data/fwi/fwi_fars_grid.json
           test -f data/fwi/fwi_fars.tif
           test -f data/output/fars_hri.tif
+          test -f data/archive_index.json
+
+          ARCHIVE_DATE="$(python -c "import json; print(json.load(open('data/fwi/fwi_fars_grid.json', encoding='utf-8'))['forecast_gregorian'])")"
+          ARCHIVE_FILE="data/archive/${ARCHIVE_DATE}.json"
+
+          test -f "${ARCHIVE_FILE}"
 
           echo "========== FWI JSON =========="
           ls -lh data/fwi/fwi_fars_grid.json
@@ -86,24 +95,32 @@ jobs:
           echo "========== Final HRI Raster =========="
           ls -lh data/output/fars_hri.tif
 
-      - name: Commit updated FWI and HRI data
+          echo "========== Daily Forecast Archive =========="
+          ls -lh "${ARCHIVE_FILE}"
+
+          echo "========== Forecast Archive Index =========="
+          ls -lh data/archive_index.json
+
+      - name: Commit updated FWI, HRI and archive data
         run: |
           git add data/fwi/fwi_fars_grid.json
           git add data/fwi/fwi_fars.tif
           git add data/output/fars_hri.tif
+          git add data/archive/
+          git add data/archive_index.json
 
           if git diff --cached --quiet; then
-            echo "No FWI or HRI data changes to commit."
+            echo "No FWI, HRI or archive data changes to commit."
             exit 0
           fi
 
-          git commit -m "Update FWI and HRI for Fars"
+          git commit -m "Update FWI, HRI and forecast archive for Fars"
 
-      - name: Push updated FWI and HRI data
+      - name: Push updated FWI, HRI and archive data
         run: |
           for attempt in 1 2 3; do
             if git push origin HEAD:main; then
-              echo "FWI and HRI data pushed successfully. ✅"
+              echo "FWI, HRI and forecast archive pushed successfully. ✅"
               exit 0
             fi
 
@@ -114,5 +131,5 @@ jobs:
             sleep 5
           done
 
-          echo "Unable to push FWI and HRI data after 3 attempts."
+          echo "Unable to push FWI, HRI and archive data after 3 attempts."
           exit 1
