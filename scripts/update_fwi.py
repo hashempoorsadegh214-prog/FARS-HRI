@@ -2,255 +2,320 @@
 # -*- coding: utf-8 -*-
 
 """
-اعتبارسنجی دادهٔ شبکه‌ای FWI استان فارس.
+دریافت و اعتبارسنجی دادهٔ آمادهٔ FWI استان فارس.
 
-سیاست پروژه:
-    دادهٔ FWI از فایل شبکه‌ای محلی و معتبر زیر خوانده می‌شود:
-        data/fwi/fwi_fars_grid.json
+منبع:
+    مخزن عمومی FARS-FWI
+    https://raw.githubusercontent.com/hashempoorsadegh214-prog/FARS-FWI/main/data/fwi_fars.json
 
-    این اسکریپت عمداً هیچ درخواست WMS، EFFIS یا ECMWF ارسال نمی‌کند.
-    دانلود مستقیم WMS در مراحل قبلی ناپایدار بود و با خطای HTTP 404
-    مواجه می‌شد.
+خروجی محلی در پروژه FARS-HRI:
+    data/fwi/fwi_fars_grid.json
 
-وظیفه:
-    1. بررسی وجود فایل JSON گریدی FWI
-    2. شناسایی رکوردهای دارای lat، lon و fwi
-    3. اعتبارسنجی مختصات، مقادیر FWI و نقاط تکراری
-    4. ثبت خلاصهٔ داده در خروجی اجرای GitHub Actions
-
-خروجی:
-    در صورت معتبر بودن داده، برنامه با exit code صفر تمام می‌شود.
+این اسکریپت عمداً از WMS، EFFIS endpoint و دریافت مستقیم متئو استفاده
+نمی‌کند؛ منبع FWI آماده و قابل‌استفاده را از پروژهٔ FARS-FWI می‌گیرد.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import requests
 
 
 # ---------------------------------------------------------------------
-# مسیرهای پروژه
+# تنظیمات پروژه
 # ---------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-FWI_JSON_PATH = PROJECT_ROOT / "data" / "fwi" / "fwi_fars_grid.json"
+SOURCE_FWI_URL = (
+    "https://raw.githubusercontent.com/"
+    "hashempoorsadegh214-prog/FARS-FWI/main/data/fwi_fars.json"
+)
 
-# دامنهٔ مورد انتظار برای دادهٔ شبکه‌ای فارس
+OUTPUT_FWI_PATH = PROJECT_ROOT / "data" / "fwi" / "fwi_fars_grid.json"
+
+REQUEST_TIMEOUT_SECONDS = 60
+
+# حداقل تعداد نقطه برای جلوگیری از پذیرش فایل ناقص یا دادهٔ آزمایشی.
 MIN_EXPECTED_POINT_COUNT = 1000
-MIN_EXPECTED_LON = 49.0
-MAX_EXPECTED_LON = 56.0
-MIN_EXPECTED_LAT = 26.0
-MAX_EXPECTED_LAT = 33.0
+
+# محدودهٔ منطقی دادهٔ استان فارس با اندکی حاشیه.
+MIN_EXPECTED_LONGITUDE = 49.0
+MAX_EXPECTED_LONGITUDE = 56.0
+MIN_EXPECTED_LATITUDE = 26.0
+MAX_EXPECTED_LATITUDE = 33.0
 
 
 # ---------------------------------------------------------------------
-# خواندن داده
+# توابع کمکی
 # ---------------------------------------------------------------------
 
-def find_point_records(data: Any) -> list[dict[str, Any]]:
+def get_points(data: Any) -> list[dict[str, Any]]:
     """
-    آرایه‌ای از رکوردهای دارای lat، lon و fwi را در JSON پیدا می‌کند.
+    آرایهٔ نقاط FWI را از ساختار استاندارد منبع استخراج می‌کند.
 
-    فایل ممکن است دارای یک لایهٔ متادیتا یا کلیدهای تو در تو باشد؛
-    بنابراین نام کلید بیرونی ثابت فرض نمی‌شود.
+    ساختار مورد انتظار:
+    {
+      "forecast_gregorian": "...",
+      "forecast_shamsi": "...",
+      "points": [
+        {"lat": ..., "lon": ..., "fwi": ...}
+      ]
+    }
     """
-    if isinstance(data, list):
-        if data and all(
-            isinstance(item, dict)
-            and {"lat", "lon", "fwi"}.issubset(item.keys())
-            for item in data
-        ):
-            return data
-
-        for item in data:
-            result = find_point_records(item)
-            if result:
-                return result
-
-    if isinstance(data, dict):
-        for value in data.values():
-            result = find_point_records(value)
-            if result:
-                return result
-
-    return []
-
-
-def load_and_validate_fwi_data(
-    json_path: Path,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    JSON را می‌خواند، رکوردهای FWI را استخراج می‌کند و اعتبارسنجی انجام می‌دهد.
-    """
-    if not json_path.exists():
-        raise FileNotFoundError(
-            "فایل گرید FWI پیدا نشد.\n\n"
-            f"مسیر مورد انتظار:\n{json_path}\n\n"
-            "فایل دادهٔ معتبر FWI را با نام زیر در مخزن قرار دهید:\n"
-            "data/fwi/fwi_fars_grid.json"
+    if not isinstance(data, dict):
+        raise ValueError(
+            "ساختار دادهٔ دریافتی باید یک شیء JSON باشد، اما این‌گونه نیست."
         )
 
-    if json_path.stat().st_size == 0:
+    points = data.get("points")
+
+    if not isinstance(points, list):
         raise ValueError(
-            f"فایل گرید FWI خالی است:\n{json_path}"
+            "کلید 'points' در فایل FWI وجود ندارد یا آرایه نیست."
         )
 
-    try:
-        with json_path.open("r", encoding="utf-8") as file:
-            data = json.load(file)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"ساختار JSON فایل FWI معتبر نیست:\n{json_path}\n"
-            f"جزئیات خطا: {exc}"
-        ) from exc
+    if not points:
+        raise ValueError("آرایهٔ 'points' خالی است.")
 
-    records = find_point_records(data)
+    return points
 
-    if not records:
+
+def validate_fwi_data(data: Any) -> tuple[int, float, float, float, float, float, float]:
+    """
+    دادهٔ FWI را اعتبارسنجی می‌کند و آمار لازم را برمی‌گرداند.
+
+    خروجی:
+        تعداد نقاط،
+        کمینه/بیشینه طول،
+        کمینه/بیشینه عرض،
+        کمینه/بیشینه FWI
+    """
+    points = get_points(data)
+
+    if len(points) < MIN_EXPECTED_POINT_COUNT:
         raise ValueError(
-            "هیچ آرایه‌ای شامل رکوردهای FWI با کلیدهای "
-            "'lat'، 'lon' و 'fwi' در فایل JSON پیدا نشد."
+            "تعداد نقاط FWI کمتر از مقدار قابل‌قبول است.\n"
+            f"تعداد دریافت‌شده: {len(points):,}\n"
+            f"حداقل مورد انتظار: {MIN_EXPECTED_POINT_COUNT:,}"
         )
 
     longitudes: list[float] = []
     latitudes: list[float] = []
     fwi_values: list[float] = []
 
-    for index, record in enumerate(records, start=1):
-        try:
-            longitude = float(record["lon"])
-            latitude = float(record["lat"])
-            fwi_value = float(record["fwi"])
-        except (KeyError, TypeError, ValueError) as exc:
+    for record_number, point in enumerate(points, start=1):
+        if not isinstance(point, dict):
             raise ValueError(
-                f"رکورد شمارهٔ {index} معتبر نیست:\n{record}"
+                f"نقطهٔ شمارهٔ {record_number} یک شیء JSON معتبر نیست."
+            )
+
+        try:
+            longitude = float(point["lon"])
+            latitude = float(point["lat"])
+            fwi_value = float(point["fwi"])
+        except KeyError as exc:
+            raise ValueError(
+                f"کلید لازم در نقطهٔ شمارهٔ {record_number} وجود ندارد: {exc}"
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"مقادیر lon، lat یا fwi در نقطهٔ شمارهٔ "
+                f"{record_number} عددی و معتبر نیستند."
             ) from exc
 
         if not np.isfinite(longitude):
-            raise ValueError(f"طول جغرافیایی نامعتبر در رکورد {index}: {longitude}")
+            raise ValueError(
+                f"طول جغرافیایی نامعتبر در نقطهٔ {record_number}: {longitude}"
+            )
 
         if not np.isfinite(latitude):
-            raise ValueError(f"عرض جغرافیایی نامعتبر در رکورد {index}: {latitude}")
+            raise ValueError(
+                f"عرض جغرافیایی نامعتبر در نقطهٔ {record_number}: {latitude}"
+            )
 
         if not np.isfinite(fwi_value):
-            raise ValueError(f"مقدار FWI نامعتبر در رکورد {index}: {fwi_value}")
+            raise ValueError(
+                f"مقدار FWI نامعتبر در نقطهٔ {record_number}: {fwi_value}"
+            )
 
         if not (-180.0 <= longitude <= 180.0):
-            raise ValueError(f"طول جغرافیایی خارج از دامنه در رکورد {index}: {longitude}")
+            raise ValueError(
+                f"طول جغرافیایی خارج از دامنه در نقطهٔ {record_number}: {longitude}"
+            )
 
         if not (-90.0 <= latitude <= 90.0):
-            raise ValueError(f"عرض جغرافیایی خارج از دامنه در رکورد {index}: {latitude}")
+            raise ValueError(
+                f"عرض جغرافیایی خارج از دامنه در نقطهٔ {record_number}: {latitude}"
+            )
 
         if fwi_value < 0.0:
-            raise ValueError(f"مقدار منفی FWI در رکورد {index}: {fwi_value}")
+            raise ValueError(
+                f"FWI منفی در نقطهٔ {record_number}: {fwi_value}"
+            )
 
         longitudes.append(longitude)
         latitudes.append(latitude)
         fwi_values.append(fwi_value)
 
-    lon_array = np.asarray(longitudes, dtype=np.float64)
-    lat_array = np.asarray(latitudes, dtype=np.float64)
-    fwi_array = np.asarray(fwi_values, dtype=np.float32)
+    longitude_array = np.asarray(longitudes, dtype=np.float64)
+    latitude_array = np.asarray(latitudes, dtype=np.float64)
+    fwi_array = np.asarray(fwi_values, dtype=np.float64)
 
-    if len(fwi_array) < MIN_EXPECTED_POINT_COUNT:
-        raise ValueError(
-            "تعداد نقاط FWI کمتر از حد قابل‌قبول است.\n"
-            f"تعداد موجود: {len(fwi_array):,}\n"
-            f"حداقل مورد انتظار: {MIN_EXPECTED_POINT_COUNT:,}\n\n"
-            "به‌جای دادهٔ نقطه‌ای یا ناقص، فایل گریدی کامل فارس را استفاده کنید."
-        )
-
-    coordinates = np.column_stack((lon_array, lat_array))
+    coordinates = np.column_stack((longitude_array, latitude_array))
     unique_coordinates = np.unique(coordinates, axis=0)
 
     if len(unique_coordinates) != len(coordinates):
         duplicate_count = len(coordinates) - len(unique_coordinates)
+
         raise ValueError(
-            "مختصات تکراری در دادهٔ FWI وجود دارد.\n"
+            "در دادهٔ FWI مختصات تکراری وجود دارد.\n"
             f"تعداد نقاط تکراری: {duplicate_count:,}"
         )
 
+    min_lon = float(longitude_array.min())
+    max_lon = float(longitude_array.max())
+    min_lat = float(latitude_array.min())
+    max_lat = float(latitude_array.max())
+    min_fwi = float(fwi_array.min())
+    max_fwi = float(fwi_array.max())
+
     if (
-        lon_array.min() < MIN_EXPECTED_LON
-        or lon_array.max() > MAX_EXPECTED_LON
-        or lat_array.min() < MIN_EXPECTED_LAT
-        or lat_array.max() > MAX_EXPECTED_LAT
+        min_lon < MIN_EXPECTED_LONGITUDE
+        or max_lon > MAX_EXPECTED_LONGITUDE
+        or min_lat < MIN_EXPECTED_LATITUDE
+        or max_lat > MAX_EXPECTED_LATITUDE
     ):
         raise ValueError(
-            "محدودهٔ مختصات داده با محدودهٔ منطقی استان فارس سازگار نیست.\n"
-            f"Lon: {lon_array.min():.4f} تا {lon_array.max():.4f}\n"
-            f"Lat: {lat_array.min():.4f} تا {lat_array.max():.4f}"
+            "محدودهٔ مختصات فایل FWI با محدودهٔ منطقی استان فارس سازگار نیست.\n"
+            f"طول جغرافیایی: {min_lon:.4f} تا {max_lon:.4f}\n"
+            f"عرض جغرافیایی: {min_lat:.4f} تا {max_lat:.4f}"
         )
 
-    return lon_array, lat_array, fwi_array
+    return (
+        len(points),
+        min_lon,
+        max_lon,
+        min_lat,
+        max_lat,
+        min_fwi,
+        max_fwi,
+    )
 
 
-# ---------------------------------------------------------------------
-# اجرای اصلی
-# ---------------------------------------------------------------------
+def download_fwi_data() -> Any:
+    """فایل JSON را از مخزن FARS-FWI دریافت می‌کند."""
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "FARS-HRI-FWI-Updater/1.0",
+    }
+
+    try:
+        response = requests.get(
+            SOURCE_FWI_URL,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            "دانلود فایل FWI از مخزن FARS-FWI ناموفق بود.\n"
+            f"آدرس: {SOURCE_FWI_URL}\n"
+            f"جزئیات: {exc}"
+        ) from exc
+
+    if not response.content:
+        raise RuntimeError("پاسخ دریافت‌شده برای فایل FWI خالی است.")
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        preview = response.text[:300].replace("\n", " ")
+
+        raise ValueError(
+            "پاسخ منبع، JSON معتبر نیست.\n"
+            f"ابتدای پاسخ: {preview}"
+        ) from exc
+
+
+def save_fwi_data(data: Any) -> None:
+    """
+    JSON را ابتدا در فایل موقت می‌نویسد و سپس به‌صورت اتمی جایگزین می‌کند
+    تا فایل ناقص در مخزن باقی نماند.
+    """
+    OUTPUT_FWI_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_output_path = OUTPUT_FWI_PATH.with_suffix(".json.tmp")
+
+    with temporary_output_path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+    temporary_output_path.replace(OUTPUT_FWI_PATH)
+
 
 def main() -> int:
-    """اجرای اعتبارسنجی فایل گریدی FWI."""
-    print("=" * 70)
-    print("اعتبارسنجی دادهٔ شبکه‌ای FWI فارس")
-    print("=" * 70)
-    print("حالت داده: Local gridded JSON")
-    print("درخواست WMS/اینترنت: غیرفعال")
+    """نقطهٔ شروع برنامه."""
+    print("=" * 72)
+    print("دریافت دادهٔ آمادهٔ FWI فارس")
+    print("=" * 72)
+    print(f"منبع: {SOURCE_FWI_URL}")
+    print(f"مقصد: {OUTPUT_FWI_PATH}")
     print()
 
     try:
-        longitudes, latitudes, fwi_values = load_and_validate_fwi_data(
-            FWI_JSON_PATH
-        )
+        print("در حال دانلود JSON FWI ...")
+        fwi_data = download_fwi_data()
 
-        unique_lons = np.unique(longitudes)
-        unique_lats = np.unique(latitudes)
+        print("در حال اعتبارسنجی داده ...")
+        (
+            point_count,
+            min_lon,
+            max_lon,
+            min_lat,
+            max_lat,
+            min_fwi,
+            max_fwi,
+        ) = validate_fwi_data(fwi_data)
 
-        lon_steps = np.diff(unique_lons)
-        lat_steps = np.diff(unique_lats)
+        source_name = str(fwi_data.get("source", "نامشخص"))
+        forecast_date = str(fwi_data.get("forecast_gregorian", "نامشخص"))
+        forecast_shamsi = str(fwi_data.get("forecast_shamsi", "نامشخص"))
 
-        lon_step = float(np.median(lon_steps)) if len(lon_steps) else 0.0
-        lat_step = float(np.median(lat_steps)) if len(lat_steps) else 0.0
+        fwi_data["downloaded_at_utc"] = datetime.now(timezone.utc).isoformat()
+        fwi_data["download_source"] = SOURCE_FWI_URL
 
-        print(f"فایل معتبر: {FWI_JSON_PATH}")
-        print(f"تعداد نقاط: {len(fwi_values):,}")
-        print(
-            f"محدودهٔ طول جغرافیایی: "
-            f"{longitudes.min():.4f} تا {longitudes.max():.4f}"
-        )
-        print(
-            f"محدودهٔ عرض جغرافیایی: "
-            f"{latitudes.min():.4f} تا {latitudes.max():.4f}"
-        )
-        print(f"تعداد طول‌های یکتا: {len(unique_lons):,}")
-        print(f"تعداد عرض‌های یکتا: {len(unique_lats):,}")
-        print(f"گام تقریبی طولی شبکه: {lon_step:.4f} درجه")
-        print(f"گام تقریبی عرضی شبکه: {lat_step:.4f} درجه")
-        print(
-            f"FWI حداقل: {fwi_values.min():.3f} | "
-            f"حداکثر: {fwi_values.max():.3f} | "
-            f"میانگین: {fwi_values.mean():.3f}"
-        )
+        print("در حال ذخیره‌سازی فایل معتبر ...")
+        save_fwi_data(fwi_data)
+
         print()
-        print("دادهٔ FWI معتبر است. ✅")
-        print(
-            "مرحلهٔ بعدی: اجرای scripts/build_fwi_raster.py "
-            "برای تولید data/fwi/fwi_fars.tif"
-        )
+        print("=" * 72)
+        print("دادهٔ FWI با موفقیت دریافت و ذخیره شد. ✅")
+        print("=" * 72)
+        print(f"تاریخ پیش‌بینی میلادی: {forecast_date}")
+        print(f"تاریخ پیش‌بینی شمسی: {forecast_shamsi}")
+        print(f"منبع اعلام‌شده: {source_name}")
+        print(f"تعداد نقاط: {point_count:,}")
+        print(f"محدوده طول جغرافیایی: {min_lon:.4f} تا {max_lon:.4f}")
+        print(f"محدوده عرض جغرافیایی: {min_lat:.4f} تا {max_lat:.4f}")
+        print(f"محدوده FWI: {min_fwi:.3f} تا {max_fwi:.3f}")
+        print(f"فایل ذخیره‌شده: {OUTPUT_FWI_PATH}")
 
         return 0
 
     except Exception as exc:
         print()
-        print("=" * 70, file=sys.stderr)
-        print("خطا در اعتبارسنجی دادهٔ FWI", file=sys.stderr)
-        print("=" * 70, file=sys.stderr)
+        print("=" * 72, file=sys.stderr)
+        print("خطا در دریافت یا اعتبارسنجی دادهٔ FWI", file=sys.stderr)
+        print("=" * 72, file=sys.stderr)
         print(str(exc), file=sys.stderr)
+
         return 1
 
 
