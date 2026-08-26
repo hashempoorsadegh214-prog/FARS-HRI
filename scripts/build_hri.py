@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
 """
-Build the Fars Hazard Risk Index (HRI) raster.
+ساخت نقشه نهایی شاخص خطر حریق فارس (HRI).
 
-Formula:
-    HRI = 100 * (0.45 * FWI_n + 0.35 * Fuel_n + 0.20 * Topo_n)
+فرمول:
+HRI = 100 * (0.45 * FWI_n + 0.35 * Fuel_n + 0.20 * Topo_n)
 
-Inputs:
-    data/fwi/fwi_fars.tif
-    data/fuel/fars_fuel.tif
-    data/fuel/Global_fuelbeds_parameters_v1.2.xlsx
-    data/dem_fars.tif
+ورودی‌ها:
+- data/fwi/fwi_fars.tif
+- data/fuel/fars_fuel.tif
+- data/fuel/Global_fuelbeds_parameters_v1.2.xlsx
+- data/dem_fars.tif
 
-Output:
-    data/output/fars_hri.tif
-
-Fuel score:
-    FineFuelLoad = G_Load + W_1hLoad + W_10hLoad
-    FuelRaw      = FineFuelLoad + 0.25 * L_depth
-
-Negative values in the fuelbed parameter table (-1, -3) mean
-"not present" or "not applicable" and are converted to zero.
+خروجی:
+- data/output/fars_hri.tif
 """
 
 from __future__ import annotations
@@ -34,85 +27,57 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
 
-# ---------------------------------------------------------------------
-# Project paths
-# ---------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FWI_FILE = ROOT / "data" / "fwi" / "fwi_fars.tif"
+FUEL_FILE = ROOT / "data" / "fuel" / "fars_fuel.tif"
+FUEL_PARAMETERS_FILE = ROOT / "data" / "fuel" / "Global_fuelbeds_parameters_v1.2.xlsx"
+DEM_FILE = ROOT / "data" / "dem_fars.tif"
+OUTPUT_FILE = ROOT / "data" / "output" / "fars_hri.tif"
 
-FWI_PATH = PROJECT_ROOT / "data" / "fwi" / "fwi_fars.tif"
-FUEL_RASTER_PATH = PROJECT_ROOT / "data" / "fuel" / "fars_fuel.tif"
-FUEL_PARAMETERS_PATH = (
-    PROJECT_ROOT / "data" / "fuel" / "Global_fuelbeds_parameters_v1.2.xlsx"
-)
-DEM_PATH = PROJECT_ROOT / "data" / "dem_fars.tif"
-OUTPUT_PATH = PROJECT_ROOT / "data" / "output" / "fars_hri.tif"
+OUTPUT_NODATA = -9999.0
 
-FUEL_SHEET_NAME = "Fuelbeds_metric"
-
-# HRI weights
 FWI_WEIGHT = 0.45
 FUEL_WEIGHT = 0.35
 TOPO_WEIGHT = 0.20
 
-# HRI output NoData value
-OUTPUT_NODATA = -9999.0
+
+def ensure_exists(path: Path, title: str) -> None:
+    """بررسی وجود فایل ورودی."""
+    if not path.is_file():
+        raise FileNotFoundError(f"فایل {title} پیدا نشد: {path}")
 
 
-# ---------------------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------------------
+def normalize(values: np.ndarray, mask: np.ndarray, title: str) -> np.ndarray:
+    """نرمال‌سازی مقادیر معتبر به بازه صفر تا یک."""
+    output = np.full(values.shape, np.nan, dtype=np.float32)
 
-def require_file(path: Path, label: str) -> None:
-    """Stop with a clear message if a required input file does not exist."""
-    if not path.exists():
-        raise FileNotFoundError(
-            f"\nRequired {label} file was not found:\n"
-            f"  {path}\n\n"
-            "Check that the file exists in the repository and that its "
-            "path matches the project structure."
-        )
+    valid_values = values[mask]
+    if valid_values.size == 0:
+        raise ValueError(f"برای {title} هیچ پیکسل معتبری وجود ندارد.")
 
-
-def normalize_valid_values(
-    array: np.ndarray,
-    valid_mask: np.ndarray,
-    label: str,
-) -> np.ndarray:
-    """
-    Normalize valid values to [0, 1] using min-max normalization.
-
-    Invalid pixels remain NaN.
-    """
-    result = np.full(array.shape, np.nan, dtype=np.float32)
-
-    values = array[valid_mask]
-    if values.size == 0:
-        raise ValueError(f"No valid pixels were available for {label} normalization.")
-
-    minimum = float(np.nanmin(values))
-    maximum = float(np.nanmax(values))
+    minimum = float(np.nanmin(valid_values))
+    maximum = float(np.nanmax(valid_values))
 
     if not np.isfinite(minimum) or not np.isfinite(maximum):
-        raise ValueError(f"{label} contains no finite values.")
+        raise ValueError(f"مقادیر {title} معتبر نیستند.")
 
-    if np.isclose(maximum, minimum):
-        result[valid_mask] = 0.0
-        print(f"{label}: constant value {minimum:.4f}; normalized to 0.")
-        return result
-
-    result[valid_mask] = (array[valid_mask] - minimum) / (maximum - minimum)
+    if np.isclose(minimum, maximum):
+        output[mask] = 0.0
+    else:
+        output[mask] = (values[mask] - minimum) / (maximum - minimum)
 
     print(
-        f"{label}: min={minimum:.4f}, max={maximum:.4f}, "
-        f"valid_pixels={int(valid_mask.sum()):,}"
+        f"{title}: حداقل={minimum:.4f} | "
+        f"حداکثر={maximum:.4f} | "
+        f"پیکسل معتبر={int(mask.sum()):,}"
     )
 
-    return result
+    return output
 
 
-def read_raster_as_float(path: Path) -> tuple[np.ndarray, dict]:
-    """Read first raster band as float32 and convert nodata to NaN."""
+def read_raster(path: Path) -> tuple[np.ndarray, dict]:
+    """خواندن اولین باند رستر و تبدیل NoData به NaN."""
     with rasterio.open(path) as src:
         data = src.read(1).astype(np.float32)
         profile = src.profile.copy()
@@ -124,24 +89,15 @@ def read_raster_as_float(path: Path) -> tuple[np.ndarray, dict]:
     return data, profile
 
 
-def reproject_to_fuel_grid(
-    source_path: Path,
-    fuel_profile: dict,
-    resampling: Resampling,
-) -> np.ndarray:
-    """
-    Reproject/resample a source raster onto the fuel raster grid.
-
-    The returned raster has the exact dimensions, CRS and transform
-    of fars_fuel.tif.
-    """
+def align_to_fuel_grid(source_file: Path, fuel_profile: dict) -> np.ndarray:
+    """هم‌تراز کردن رستر ورودی با شبکه fars_fuel.tif."""
     destination = np.full(
         (fuel_profile["height"], fuel_profile["width"]),
         np.nan,
         dtype=np.float32,
     )
 
-    with rasterio.open(source_path) as src:
+    with rasterio.open(source_file) as src:
         source = src.read(1).astype(np.float32)
 
         if src.nodata is not None:
@@ -156,28 +112,26 @@ def reproject_to_fuel_grid(
             dst_transform=fuel_profile["transform"],
             dst_crs=fuel_profile["crs"],
             dst_nodata=np.nan,
-            resampling=resampling,
+            resampling=Resampling.bilinear,
         )
 
     return destination
 
 
-# ---------------------------------------------------------------------
-# Fuel component
-# ---------------------------------------------------------------------
-
-def build_fuel_lookup(excel_path: Path) -> dict[int, float]:
+def get_fuel_scores(excel_file: Path) -> dict[int, float]:
     """
-    Read fuelbed parameters and calculate one FuelRaw score per JOIN_VALUE.
+    خواندن جدول Fuelbeds_metric و ساخت امتیاز سوخت.
 
-    FuelRaw formula:
-        G_Load + W_1hLoad + W_10hLoad + 0.25 * L_depth
+    FuelRaw =
+        بار علف
+        + بار چوبی ۱ ساعته
+        + بار چوبی ۱۰ ساعته
+        + ۰٫۲۵ × عمق لاشبرگ
 
-    Fine fuels receive the strongest importance because they promote
-    ignition and rapid surface-fire spread. Litter depth is included
-    with a lower weight.
+    تمام مقادیر منفی، شامل -1 و -3، به معنی نبود/نامعتبر بودن
+    پارامتر هستند و به صفر تبدیل می‌شوند.
     """
-    required_columns = [
+    columns = [
         "JOIN_VALUE",
         "G_Load (Mg/ha)",
         "W_1hLoad (Mg/ha)",
@@ -185,324 +139,188 @@ def build_fuel_lookup(excel_path: Path) -> dict[int, float]:
         "L_depth (cm)",
     ]
 
-    fuel_table = pd.read_excel(
-        excel_path,
-        sheet_name=FUEL_SHEET_NAME,
+    table = pd.read_excel(
+        excel_file,
+        sheet_name="Fuelbeds_metric",
         engine="openpyxl",
     )
 
-    missing_columns = [
-        column for column in required_columns
-        if column not in fuel_table.columns
-    ]
-
+    missing_columns = [column for column in columns if column not in table.columns]
     if missing_columns:
         raise ValueError(
-            "Required columns are missing from the Fuelbeds_metric sheet:\n"
-            + "\n".join(f"  - {column}" for column in missing_columns)
+            "این ستون‌ها در شیت Fuelbeds_metric پیدا نشدند: "
+            + ", ".join(missing_columns)
         )
 
-    fuel_table = fuel_table[required_columns].copy()
+    table = table[columns].copy()
+    table["JOIN_VALUE"] = pd.to_numeric(table["JOIN_VALUE"], errors="coerce")
+    table = table.dropna(subset=["JOIN_VALUE"])
+    table["JOIN_VALUE"] = table["JOIN_VALUE"].astype(np.int64)
 
-    numeric_columns = required_columns[1:]
-    for column in numeric_columns:
-        fuel_table[column] = pd.to_numeric(
-            fuel_table[column],
-            errors="coerce",
-        )
+    for column in columns[1:]:
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+        table[column] = table[column].fillna(0.0)
+        table.loc[table[column] < 0, column] = 0.0
 
-        # -1 and -3 (and any other negative value) mean no usable fuel value.
-        fuel_table.loc[fuel_table[column] < 0, column] = 0.0
-        fuel_table[column] = fuel_table[column].fillna(0.0)
-
-    fuel_table["JOIN_VALUE"] = pd.to_numeric(
-        fuel_table["JOIN_VALUE"],
-        errors="coerce",
+    table["fuel_raw"] = (
+        table["G_Load (Mg/ha)"]
+        + table["W_1hLoad (Mg/ha)"]
+        + table["W_10h Load (Mg/ha)"]
+        + 0.25 * table["L_depth (cm)"]
     )
 
-    fuel_table = fuel_table.dropna(subset=["JOIN_VALUE"]).copy()
-    fuel_table["JOIN_VALUE"] = fuel_table["JOIN_VALUE"].astype(np.int64)
+    if table["JOIN_VALUE"].duplicated().any():
+        raise ValueError("ستون JOIN_VALUE در فایل پارامتر سوخت دارای مقدار تکراری است.")
 
-    fuel_table["FuelRaw"] = (
-        fuel_table["G_Load (Mg/ha)"]
-        + fuel_table["W_1hLoad (Mg/ha)"]
-        + fuel_table["W_10h Load (Mg/ha)"]
-        + 0.25 * fuel_table["L_depth (cm)"]
-    )
-
-    if fuel_table["JOIN_VALUE"].duplicated().any():
-        duplicates = fuel_table.loc[
-            fuel_table["JOIN_VALUE"].duplicated(),
-            "JOIN_VALUE",
-        ].tolist()
-
-        raise ValueError(
-            "Duplicate JOIN_VALUE records were found in Fuelbeds_metric:\n"
-            f"  {duplicates}"
-        )
-
-    lookup = dict(
-        zip(
-            fuel_table["JOIN_VALUE"].astype(int),
-            fuel_table["FuelRaw"].astype(float),
-        )
-    )
-
-    print(f"Fuel parameter records loaded: {len(lookup):,}")
-    return lookup
+    return dict(zip(table["JOIN_VALUE"], table["fuel_raw"]))
 
 
-def build_fuel_raster(
+def build_fuel_component(
     fuel_codes: np.ndarray,
-    fuel_valid_mask: np.ndarray,
-    fuel_lookup: dict[int, float],
+    fuel_mask: np.ndarray,
+    fuel_scores: dict[int, float],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Convert integer fuelbed codes in fars_fuel.tif to FuelRaw values.
-
-    Returns:
-        fuel_raw: FuelRaw raster, NaN where unavailable.
-        mapped_mask: true where a valid fuel pixel was successfully mapped.
-    """
+    """تبدیل کدهای سوخت رستر به امتیاز FuelRaw."""
     fuel_raw = np.full(fuel_codes.shape, np.nan, dtype=np.float32)
 
-    valid_codes = np.unique(fuel_codes[fuel_valid_mask]).astype(np.int64)
+    codes_in_raster = np.unique(fuel_codes[fuel_mask]).astype(np.int64)
     missing_codes = []
 
-    for fuel_code in valid_codes:
-        score = fuel_lookup.get(int(fuel_code))
+    for code in codes_in_raster:
+        score = fuel_scores.get(int(code))
 
         if score is None:
-            missing_codes.append(int(fuel_code))
+            missing_codes.append(int(code))
             continue
 
-        fuel_raw[fuel_codes == fuel_code] = np.float32(score)
-
-    mapped_mask = np.isfinite(fuel_raw)
+        fuel_raw[fuel_codes == code] = np.float32(score)
 
     if missing_codes:
         print(
-            "Warning: fuel codes found in fars_fuel.tif but missing from "
-            "Fuelbeds_metric JOIN_VALUE:"
+            "هشدار: این کدهای رستر سوخت در ستون JOIN_VALUE اکسل پیدا نشدند:"
         )
-        print(f"  {sorted(missing_codes)}")
+        print(sorted(missing_codes))
 
-    print(
-        f"Fuel pixels mapped successfully: "
-        f"{int(mapped_mask.sum()):,} / {int(fuel_valid_mask.sum()):,}"
-    )
+    mapped_mask = np.isfinite(fuel_raw)
 
     if not mapped_mask.any():
-        raise ValueError(
-            "No fuel codes from fars_fuel.tif were matched to JOIN_VALUE "
-            "in the fuelbed parameter table."
-        )
+        raise ValueError("هیچ کد سوختی از رستر با جدول اکسل تطبیق پیدا نکرد.")
+
+    print(f"پیکسل‌های دارای امتیاز سوخت: {int(mapped_mask.sum()):,}")
 
     return fuel_raw, mapped_mask
 
 
-# ---------------------------------------------------------------------
-# Topographic component
-# ---------------------------------------------------------------------
-
-def calculate_slope_degrees(
-    dem: np.ndarray,
-    transform,
-) -> np.ndarray:
+def calculate_slope_degrees(dem: np.ndarray, transform) -> np.ndarray:
     """
-    Calculate terrain slope in degrees from a DEM.
+    محاسبه شیب بر حسب درجه از DEM در EPSG:4326.
 
-    The DEM is geographic (EPSG:4326), so pixel size in degrees is converted
-    approximately to metres using the latitude at each row.
+    تبدیل اندازه پیکسل جغرافیایی به متر، بر اساس عرض جغرافیایی هر ردیف
+    انجام می‌شود.
     """
-    slope_degrees = np.full(dem.shape, np.nan, dtype=np.float32)
+    slope = np.full(dem.shape, np.nan, dtype=np.float32)
+    valid_mask = np.isfinite(dem)
 
-    valid_dem = np.isfinite(dem)
-    if valid_dem.sum() == 0:
-        raise ValueError("DEM has no valid values after reprojection.")
+    if not valid_mask.any():
+        raise ValueError("پس از هم‌ترازی، DEM هیچ مقدار معتبری ندارد.")
 
-    # Fill gaps temporarily to avoid invalid gradient calculation.
-    filled_dem = dem.copy()
-    fill_value = float(np.nanmedian(filled_dem[valid_dem]))
-    filled_dem[~valid_dem] = fill_value
+    dem_filled = dem.copy()
+    dem_filled[~valid_mask] = float(np.nanmedian(dem[valid_mask]))
 
-    pixel_size_lon_deg = abs(transform.a)
-    pixel_size_lat_deg = abs(transform.e)
+    pixel_lon_degree = abs(transform.a)
+    pixel_lat_degree = abs(transform.e)
 
     rows = np.arange(dem.shape[0], dtype=np.float64)
     latitudes = transform.f + (rows + 0.5) * transform.e
 
-    metres_per_degree_lat = 111_320.0
-    metres_per_degree_lon = 111_320.0 * np.cos(np.deg2rad(latitudes))
+    meters_per_degree_lat = 111_320.0
+    meters_per_degree_lon = 111_320.0 * np.cos(np.deg2rad(latitudes))
+    meters_per_degree_lon = np.maximum(meters_per_degree_lon, 1.0)
 
-    metres_per_degree_lon = np.maximum(metres_per_degree_lon, 1.0)
+    pixel_x_meter = meters_per_degree_lon * pixel_lon_degree
+    pixel_y_meter = meters_per_degree_lat * pixel_lat_degree
 
-    pixel_size_x_m = metres_per_degree_lon * pixel_size_lon_deg
-    pixel_size_y_m = metres_per_degree_lat * pixel_size_lat_deg
+    gradient_y_pixel, gradient_x_pixel = np.gradient(dem_filled)
 
-    # First calculate gradients in pixel units.
-    gradient_y_pixels, gradient_x_pixels = np.gradient(filled_dem)
+    gradient_x = gradient_x_pixel / pixel_x_meter[np.newaxis, :]
+    gradient_y = gradient_y_pixel / pixel_y_meter
 
-    # Convert elevation change per pixel to elevation change per metre.
-    gradient_x = gradient_x_pixels / pixel_size_x_m[np.newaxis, :]
-    gradient_y = gradient_y_pixels / pixel_size_y_m
+    slope_radian = np.arctan(np.sqrt(gradient_x**2 + gradient_y**2))
+    slope[valid_mask] = np.degrees(slope_radian[valid_mask])
 
-    slope_radians = np.arctan(
-        np.sqrt(gradient_x ** 2 + gradient_y ** 2)
-    )
+    return slope
 
-    slope_degrees[valid_dem] = np.degrees(slope_radians[valid_dem])
-
-    return slope_degrees
-
-
-# ---------------------------------------------------------------------
-# Main workflow
-# ---------------------------------------------------------------------
 
 def main() -> None:
-    """Build and save the final Fars HRI raster."""
+    """اجرای کامل ساخت HRI."""
     print("=" * 70)
-    print("FARS-HRI: Building final Hazard Risk Index raster")
+    print("شروع ساخت نقشه نهایی HRI فارس")
     print("=" * 70)
 
-    require_file(FWI_PATH, "FWI raster")
-    require_file(FUEL_RASTER_PATH, "fuel raster")
-    require_file(FUEL_PARAMETERS_PATH, "fuel parameter Excel")
-    require_file(DEM_PATH, "DEM raster")
+    ensure_exists(FWI_FILE, "FWI")
+    ensure_exists(FUEL_FILE, "رستر سوخت")
+    ensure_exists(FUEL_PARAMETERS_FILE, "اکسل پارامتر سوخت")
+    ensure_exists(DEM_FILE, "DEM")
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # -------------------------------------------------------------
-    # 1. Read fuel raster: this is the master/reference grid.
-    # -------------------------------------------------------------
-    print("\n[1/6] Reading fuel raster (reference grid)...")
-
-    fuel_codes_float, fuel_profile = read_raster_as_float(FUEL_RASTER_PATH)
-    fuel_valid_mask = np.isfinite(fuel_codes_float)
-    fuel_codes = np.where(
-        fuel_valid_mask,
-        fuel_codes_float,
-        0,
-    ).astype(np.int64)
+    print("\n[1/5] خواندن رستر سوخت به‌عنوان شبکه مرجع...")
+    fuel_data, fuel_profile = read_raster(FUEL_FILE)
+    fuel_mask = np.isfinite(fuel_data)
+    fuel_codes = np.where(fuel_mask, fuel_data, 0).astype(np.int64)
 
     print(
-        f"Reference grid: {fuel_profile['width']} x {fuel_profile['height']}"
+        f"شبکه مرجع: {fuel_profile['width']} × {fuel_profile['height']} | "
+        f"CRS: {fuel_profile['crs']}"
     )
-    print(f"Reference CRS: {fuel_profile['crs']}")
-    print(f"Valid fuel pixels: {int(fuel_valid_mask.sum()):,}")
+    print(f"پیکسل‌های معتبر رستر سوخت: {int(fuel_mask.sum()):,}")
 
-    # -------------------------------------------------------------
-    # 2. Build and normalize Fuel component.
-    # -------------------------------------------------------------
-    print("\n[2/6] Building Fuel component from fuelbed parameters...")
-
-    fuel_lookup = build_fuel_lookup(FUEL_PARAMETERS_PATH)
-    fuel_raw, fuel_mapped_mask = build_fuel_raster(
-        fuel_codes=fuel_codes,
-        fuel_valid_mask=fuel_valid_mask,
-        fuel_lookup=fuel_lookup,
+    print("\n[2/5] ساخت مؤلفه Fuel...")
+    fuel_scores = get_fuel_scores(FUEL_PARAMETERS_FILE)
+    fuel_raw, fuel_mask_mapped = build_fuel_component(
+        fuel_codes,
+        fuel_mask,
+        fuel_scores,
     )
+    fuel_normalized = normalize(fuel_raw, fuel_mask_mapped, "Fuel")
 
-    fuel_normalized = normalize_valid_values(
-        array=fuel_raw,
-        valid_mask=fuel_mapped_mask,
-        label="Fuel",
-    )
+    print("\n[3/5] خواندن و نرمال‌سازی FWI...")
+    fwi_data, fwi_profile = read_raster(FWI_FILE)
 
-    # -------------------------------------------------------------
-    # 3. Read/reproject and normalize FWI component.
-    # -------------------------------------------------------------
-    print("\n[3/6] Reading FWI raster...")
-
-    with rasterio.open(FWI_PATH) as fwi_src:
-        same_grid = (
-            fwi_src.crs == fuel_profile["crs"]
-            and fwi_src.width == fuel_profile["width"]
-            and fwi_src.height == fuel_profile["height"]
-            and fwi_src.transform == fuel_profile["transform"]
-        )
-
-    if same_grid:
-        fwi, _ = read_raster_as_float(FWI_PATH)
-        print("FWI raster is already aligned with the fuel grid.")
-    else:
-        print("FWI raster is not aligned; resampling to the fuel grid...")
-        fwi = reproject_to_fuel_grid(
-            source_path=FWI_PATH,
-            fuel_profile=fuel_profile,
-            resampling=Resampling.bilinear,
-        )
-
-    fwi_valid_mask = np.isfinite(fwi) & (fwi >= 0)
-    fwi_normalized = normalize_valid_values(
-        array=fwi,
-        valid_mask=fwi_valid_mask,
-        label="FWI",
+    fwi_is_aligned = (
+        fwi_profile["crs"] == fuel_profile["crs"]
+        and fwi_profile["width"] == fuel_profile["width"]
+        and fwi_profile["height"] == fuel_profile["height"]
+        and fwi_profile["transform"] == fuel_profile["transform"]
     )
 
-    # -------------------------------------------------------------
-    # 4. Reproject DEM, calculate slope and normalize Topo component.
-    # -------------------------------------------------------------
-    print("\n[4/6] Building Topography component from DEM slope...")
+    if not fwi_is_aligned:
+        print("FWI با شبکه سوخت هم‌تراز نیست؛ بازنمونه‌برداری انجام می‌شود...")
+        fwi_data = align_to_fuel_grid(FWI_FILE, fuel_profile)
 
-    dem_on_fuel_grid = reproject_to_fuel_grid(
-        source_path=DEM_PATH,
-        fuel_profile=fuel_profile,
-        resampling=Resampling.bilinear,
-    )
+    fwi_mask = np.isfinite(fwi_data) & (fwi_data >= 0)
+    fwi_normalized = normalize(fwi_data, fwi_mask, "FWI")
 
-    slope_degrees = calculate_slope_degrees(
-        dem=dem_on_fuel_grid,
-        transform=fuel_profile["transform"],
-    )
+    print("\n[4/5] ساخت مؤلفه Topography از شیب DEM...")
+    dem_aligned = align_to_fuel_grid(DEM_FILE, fuel_profile)
+    slope = calculate_slope_degrees(dem_aligned, fuel_profile["transform"])
 
-    topo_valid_mask = np.isfinite(slope_degrees)
-    topo_normalized = normalize_valid_values(
-        array=slope_degrees,
-        valid_mask=topo_valid_mask,
-        label="Slope / Topography",
-    )
+    topo_mask = np.isfinite(slope)
+    topo_normalized = normalize(slope, topo_mask, "Slope / Topography")
 
-    # -------------------------------------------------------------
-    # 5. Combine components to create HRI.
-    # -------------------------------------------------------------
-    print("\n[5/6] Calculating HRI...")
+    print("\n[5/5] محاسبه و ذخیره HRI...")
+    valid_mask = fuel_mask_mapped & fwi_mask & topo_mask
 
-    final_valid_mask = (
-        fuel_mapped_mask
-        & fwi_valid_mask
-        & topo_valid_mask
-    )
-
-    if not final_valid_mask.any():
-        raise ValueError(
-            "No overlapping valid pixels were found among FWI, Fuel and DEM."
-        )
+    if not valid_mask.any():
+        raise ValueError("پیکسل معتبر مشترکی بین FWI، Fuel و Topography وجود ندارد.")
 
     hri = np.full(fuel_codes.shape, OUTPUT_NODATA, dtype=np.float32)
 
-    hri[final_valid_mask] = (
-        100.0
-        * (
-            FWI_WEIGHT * fwi_normalized[final_valid_mask]
-            + FUEL_WEIGHT * fuel_normalized[final_valid_mask]
-            + TOPO_WEIGHT * topo_normalized[final_valid_mask]
-        )
+    hri[valid_mask] = 100.0 * (
+        FWI_WEIGHT * fwi_normalized[valid_mask]
+        + FUEL_WEIGHT * fuel_normalized[valid_mask]
+        + TOPO_WEIGHT * topo_normalized[valid_mask]
     )
-
-    hri_valid_values = hri[final_valid_mask]
-
-    print(f"Final valid HRI pixels: {int(final_valid_mask.sum()):,}")
-    print(
-        f"HRI range: {float(np.nanmin(hri_valid_values)):.2f} "
-        f"to {float(np.nanmax(hri_valid_values)):.2f}"
-    )
-
-    # -------------------------------------------------------------
-    # 6. Save final GeoTIFF.
-    # -------------------------------------------------------------
-    print("\n[6/6] Saving final HRI raster...")
 
     output_profile = fuel_profile.copy()
     output_profile.update(
@@ -516,39 +334,32 @@ def main() -> None:
         BIGTIFF="IF_SAFER",
     )
 
-    with rasterio.open(OUTPUT_PATH, "w", **output_profile) as dst:
+    with rasterio.open(OUTPUT_FILE, "w", **output_profile) as dst:
         dst.write(hri, 1)
-        dst.set_band_description(1, "Fars Hazard Risk Index (HRI: 0-100)")
-
+        dst.set_band_description(1, "Fars Hazard Risk Index (HRI 0-100)")
         dst.update_tags(
             TITLE="Fars Hazard Risk Index",
             FORMULA="HRI = 100 * (0.45*FWI + 0.35*Fuel + 0.20*Topo)",
             FWI_WEIGHT=str(FWI_WEIGHT),
             FUEL_WEIGHT=str(FUEL_WEIGHT),
             TOPO_WEIGHT=str(TOPO_WEIGHT),
-            FUEL_METHOD=(
-                "FuelRaw = G_Load + W_1hLoad + W_10hLoad + "
-                "0.25 * L_depth; min-max normalized"
-            ),
-            TOPO_METHOD=(
-                "DEM reprojected to fuel grid; slope in degrees; "
-                "min-max normalized"
-            ),
-            FWI_METHOD="FWI raster min-max normalized",
-            SOURCE_FWI=str(FWI_PATH.relative_to(PROJECT_ROOT)),
-            SOURCE_FUEL=str(FUEL_RASTER_PATH.relative_to(PROJECT_ROOT)),
-            SOURCE_DEM=str(DEM_PATH.relative_to(PROJECT_ROOT)),
+            FUEL_METHOD="G_Load + W_1hLoad + W_10hLoad + 0.25*L_depth",
+            TOPO_METHOD="Slope degrees derived from dem_fars.tif",
         )
 
+    valid_hri = hri[valid_mask]
+
     print("\n" + "=" * 70)
-    print("HRI raster created successfully.")
-    print(f"Output: {OUTPUT_PATH}")
+    print("نقشه نهایی HRI با موفقیت ساخته شد. ✅")
     print("=" * 70)
+    print(f"فایل خروجی: {OUTPUT_FILE}")
+    print(f"پیکسل‌های معتبر: {int(valid_mask.sum()):,}")
+    print(f"دامنه HRI: {float(valid_hri.min()):.2f} تا {float(valid_hri.max()):.2f}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"\nERROR: {error}", file=sys.stderr)
+        print(f"\nخطا: {error}", file=sys.stderr)
         sys.exit(1)
