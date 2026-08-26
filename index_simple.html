@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>سامانه پایش خطر آتش‌سوزی استان فارس (FWI)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: Tahoma, 'Segoe UI', sans-serif; }
+    body { display: flex; flex-direction: column; height: 100vh; background: #f4f6f9; color: #333; }
+    header { background: #1e293b; color: #fff; padding: 10px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+    header h1 { font-size: 1.1rem; font-weight: bold; }
+    .btn-excel { background: #16a34a; color: #fff; text-decoration: none; padding: 6px 12px; border-radius: 4px; font-size: 0.85rem; font-weight: bold; transition: 0.2s; }
+    .btn-excel:hover { background: #15803d; }
+    #controls { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 8px 16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; font-size: 0.85rem; }
+    .control-group { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .control-group label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    select { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; outline: none; background: #fff; font-size: 0.85rem; }
+    #stats { display: flex; flex-wrap: wrap; gap: 10px; }
+    .stat-badge { background: #f1f5f9; padding: 4px 8px; border-radius: 4px; border: 1px solid #e2e8f0; font-size: 0.8rem; }
+    .stat-badge strong { color: #0f172a; }
+    #status { padding: 4px 16px; background: #f8fafc; font-size: 0.75rem; color: #64748b; border-bottom: 1px solid #e2e8f0; }
+    #map { flex: 1; width: 100%; min-height: 400px; }
+    .legend-box { background: rgba(255, 255, 255, 0.92); padding: 8px 10px; border-radius: 5px; box-shadow: 0 1px 4px rgba(0,0,0,0.2); font-size: 0.75rem; line-height: 1.5; }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .color-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>سامانه پایش خطر آتش‌سوزی مراتع و جنگل‌های استان فارس (FWI)</h1>
+    <a href="FARS_FWI_GeoReport.xlsx" download class="btn-excel">📥 دانلود گزارش اکسل FWI</a>
+  </header>
+
+  <div id="controls">
+    <div class="control-group">
+      <div>
+        <label for="riskFilter" style="display:inline; margin-left:4px;">طبقه خطر:</label>
+        <select id="riskFilter">
+          <option value="all">همه طبقات</option>
+          <option value="Very Low">بسیار کم (۰ - ۲)</option>
+          <option value="Low">کم (۲ - ۵)</option>
+          <option value="Moderate">متوسط (۵ - ۱۰)</option>
+          <option value="High">زیاد (۱۰ - ۲۰)</option>
+          <option value="Very High">بسیار زیاد (۲۰ - ۳۰)</option>
+          <option value="Extreme">بحرانی (> ۳۰)</option>
+        </select>
+      </div>
+
+      <label><input type="checkbox" id="chkFwi" checked> نقاط FWI</label>
+      <label><input type="checkbox" id="chkBorder" checked> مرز فارس</label>
+      <label><input type="checkbox" id="chkProtected" checked> مناطق حفاظت‌شده</label>
+      <label><input type="checkbox" id="chkHunting" checked> مناطق شکارممنوع</label>
+    </div>
+
+    <div id="stats">
+      <div class="stat-badge">تعداد نقاط: <strong id="stCount">-</strong></div>
+      <div class="stat-badge">میانگین FWI: <strong id="stMean">-</strong></div>
+      <div class="stat-badge">حداکثر FWI: <strong id="stMax">-</strong></div>
+      <div class="stat-badge">نقاط پرخطر (High+): <strong id="stHighRisk">-</strong></div>
+    </div>
+  </div>
+
+  <div id="status">در حال راه‌اندازی نقشه و دریافت داده‌ها...</div>
+
+  <div id="map"></div>
+
+  <script>
+    // 1. نقشه بلافاصله روی مرکز استان فارس مقداردهی اولیه می‌شود
+    const map = L.map('map', {
+      preferCanvas: true
+    }).setView([29.3, 53.3], 7);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    // نگهداری لایه‌ها و متغیرها
+    let fwiLayerGroup = L.layerGroup().addTo(map);
+    let borderLayer = null;
+    let protectedLayer = null;
+    let huntingLayer = null;
+
+    let allPoints = [];
+
+    // رنگ‌بندی استاندارد FWI بر اساس مقدار عددی یا کلاس
+    function getFwiColor(val) {
+      if (val >= 30) return '#7f0000'; // Extreme - زرشکی تیره
+      if (val >= 20) return '#d73027'; // Very High - قرمز
+      if (val >= 10) return '#f46d43'; // High - نارنجی
+      if (val >= 5)  return '#fee08b'; // Moderate - زرد
+      if (val >= 2)  return '#d9ef8b'; // Low - سبز روشن
+      return '#66bd63';               // Very Low - سبز
+    }
+
+    function getRiskNameFa(val) {
+      if (val >= 30) return 'بحرانی (Extreme)';
+      if (val >= 20) return 'بسیار زیاد (Very High)';
+      if (val >= 10) return 'زیاد (High)';
+      if (val >= 5)  return 'متوسط (Moderate)';
+      if (val >= 2)  return 'کم (Low)';
+      return 'بسیار کم (Very Low)';
+    }
+
+    function matchesFilter(val, filter) {
+      if (filter === 'all') return true;
+      if (filter === 'Very Low') return val < 2;
+      if (filter === 'Low') return val >= 2 && val < 5;
+      if (filter === 'Moderate') return val >= 5 && val < 10;
+      if (filter === 'High') return val >= 10 && val < 20;
+      if (filter === 'Very High') return val >= 20 && val < 30;
+      if (filter === 'Extreme') return val >= 30;
+      return true;
+    }
+
+    // به‌روزرسانی آمار و نقاط FWI
+    function renderFwiPoints() {
+      fwiLayerGroup.clearLayers();
+      const filter = document.getElementById('riskFilter').value;
+
+      let filtered = [];
+      let sum = 0;
+      let max = 0;
+      let highCount = 0;
+
+      for (let i = 0; i < allPoints.length; i++) {
+        const pt = allPoints[i];
+        const val = typeof pt.fwi === 'number' ? pt.fwi : 0;
+        if (matchesFilter(val, filter)) {
+          filtered.push(pt);
+          sum += val;
+          if (val > max) max = val;
+          if (val >= 10) highCount++;
+
+          if (document.getElementById('chkFwi').checked) {
+            const circle = L.circleMarker([pt.lat, pt.lon], {
+              radius: 4,
+              fillColor: getFwiColor(val),
+              color: '#333',
+              weight: 0.5,
+              opacity: 0.8,
+              fillOpacity: 0.85
+            });
+            circle.bindPopup(
+              `<strong>شاخص FWI: ${val.toFixed(2)}</strong><br>` +
+              `طبقه خطر: ${getRiskNameFa(val)}<br>` +
+              `موقعیت: ${pt.lat.toFixed(3)}, ${pt.lon.toFixed(3)}`
+            );
+            fwiLayerGroup.addLayer(circle);
+          }
+        }
+      }
+
+      // بروزرسانی پنل آمار
+      document.getElementById('stCount').innerText = filtered.length.toLocaleString('fa-IR');
+      document.getElementById('stMean').innerText = filtered.length > 0 ? (sum / filtered.length).toFixed(2) : '-';
+      document.getElementById('stMax').innerText = filtered.length > 0 ? max.toFixed(2) : '-';
+      document.getElementById('stHighRisk').innerText = highCount.toLocaleString('fa-IR');
+    }
+
+    // راهنمای نقشه (Legend)
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function() {
+      const div = L.DomUtil.create('div', 'legend-box');
+      div.innerHTML = `
+        <strong>راهنمای خطر FWI</strong><br>
+        <div class="legend-item"><span class="color-dot" style="background:#7f0000"></span> بحرانی (&ge; ۳۰)</div>
+        <div class="legend-item"><span class="color-dot" style="background:#d73027"></span> بسیار زیاد (۲۰ - ۳۰)</div>
+        <div class="legend-item"><span class="color-dot" style="background:#f46d43"></span> زیاد (۱۰ - ۲۰)</div>
+        <div class="legend-item"><span class="color-dot" style="background:#fee08b"></span> متوسط (۵ - ۱۰)</div>
+        <div class="legend-item"><span class="color-dot" style="background:#d9ef8b"></span> کم (۲ - ۵)</div>
+        <div class="legend-item"><span class="color-dot" style="background:#66bd63"></span> بسیار کم (&lt; ۲)</div>
+      `;
+      return div;
+    };
+    legend.addTo(map);
+
+    // دریافت مستقل لایه‌ها همراه با try/catch تا خطای یکی مانع بقیه نشود
+    const statusEl = document.getElementById('status');
+
+    async function loadData() {
+      // 1. دریافت مرز فارس
+      fetch('fars.geojson')
+        .then(r => r.json())
+        .then(data => {
+          borderLayer = L.geoJSON(data, {
+            style: { color: '#0f172a', weight: 2, fillOpacity: 0.03 }
+          }).addTo(map);
+        })
+        .catch(err => console.warn('خطا در بارگذاری مرز فارس:', err));
+
+      // 2. مناطق حفاظت‌شده (از فایل hunting_banned.geojson به علت جابجایی محتوا)
+      fetch('hunting_banned.geojson')
+        .then(r => r.json())
+        .then(data => {
+          protectedLayer = L.geoJSON(data, {
+            style: { color: '#15803d', weight: 1.5, fillColor: '#22c55e', fillOpacity: 0.35 },
+            onEachFeature: (f, l) => {
+              const name = (f.properties && (f.properties.Name || f.properties.name_fa || f.properties.name)) || 'منطقه حفاظت‌شده';
+              l.bindPopup(`<strong>منطقه حفاظت‌شده:</strong> ${name}`);
+            }
+          }).addTo(map);
+        })
+        .catch(err => console.warn('خطا در بارگذاری مناطق حفاظت‌شده:', err));
+
+      // 3. مناطق شکار ممنوع (از فایل protected_areas.geojson به علت جابجایی محتوا)
+      fetch('protected_areas.geojson')
+        .then(r => r.json())
+        .then(data => {
+          huntingLayer = L.geoJSON(data, {
+            style: { color: '#b45309', weight: 1.5, fillColor: '#f59e0b', fillOpacity: 0.35 },
+            onEachFeature: (f, l) => {
+              const name = (f.properties && (f.properties.Name || f.properties.name_fa || f.properties.name)) || 'منطقه شکار ممنوع';
+              l.bindPopup(`<strong>منطقه شکار ممنوع:</strong> ${name}`);
+            }
+          }).addTo(map);
+        })
+        .catch(err => console.warn('خطا در بارگذاری مناطق شکارممنوع:', err));
+
+      // 4. دریافت داده‌های شاخص FWI
+      try {
+        const r = await fetch('fwi_fars.json');
+        const json = await r.json();
+        allPoints = Array.isArray(json) ? json : (json.points || json.data || []);
+        renderFwiPoints();
+        const dateStr = json.forecast_shamsi || json.forecast_gregorian || '';
+        statusEl.innerText = `داده‌های FWI با موفقیت بارگذاری شد (${allPoints.length} نقطه). ` + (dateStr ? `تاریخ پیش‌بینی: ${dateStr}` : '');
+      } catch (err) {
+        console.error('خطا در بارگذاری FWI:', err);
+        statusEl.innerText = 'خطا در بارگذاری داده‌های FWI. نقشه پایه و سایر لایه‌ها در دسترس هستند.';
+      }
+    }
+
+    // کنترل رویدادها
+    document.getElementById('riskFilter').addEventListener('change', renderFwiPoints);
+    
+    document.getElementById('chkFwi').addEventListener('change', (e) => {
+      if (e.target.checked) {
+        renderFwiPoints();
+      } else {
+        fwiLayerGroup.clearLayers();
+      }
+    });
+
+    document.getElementById('chkBorder').addEventListener('change', (e) => {
+      if (!borderLayer) return;
+      if (e.target.checked) map.addLayer(borderLayer);
+      else map.removeLayer(borderLayer);
+    });
+
+    document.getElementById('chkProtected').addEventListener('change', (e) => {
+      if (!protectedLayer) return;
+      if (e.target.checked) map.addLayer(protectedLayer);
+      else map.removeLayer(protectedLayer);
+    });
+
+    document.getElementById('chkHunting').addEventListener('change', (e) => {
+      if (!huntingLayer) return;
+      if (e.target.checked) map.addLayer(huntingLayer);
+      else map.removeLayer(huntingLayer);
+    });
+
+    // شروع بارگذاری داده‌ها
+    loadData();
+  </script>
+</body>
+</html>
