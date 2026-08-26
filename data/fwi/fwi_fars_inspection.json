@@ -1,6 +1,6 @@
 {
   "project": "FARS-HRI",
-  "inspected_at_utc": "2026-08-25T21:33:37+00:00",
+  "inspected_at_utc": "2026-08-26T10:00:20+00:00",
   "input_file": "data/fwi/fwi_fars.tif",
   "driver": "GTiff",
   "crs": "EPSG:4326",
