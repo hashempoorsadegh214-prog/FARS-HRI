@@ -1,5 +1,17 @@
 [
   {
+    "date_gregorian": "2026-10-06",
+    "date_shamsi": "1405-07-14",
+    "file": "data/archive/2026-10-06.json",
+    "generated_at_iran": "2026-10-05 10:43",
+    "points_count": 3663,
+    "mean_fwi": 59.01,
+    "max_fwi": 83.49,
+    "mean_hri": 45.5,
+    "max_hri": 87.33,
+    "risk_level": "بسیار شدید"
+  },
+  {
     "date_gregorian": "2026-10-05",
     "date_shamsi": "1405-07-13",
     "file": "data/archive/2026-10-05.json",
